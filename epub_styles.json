@@ -1,0 +1,32 @@
+{
+    "chapter": {
+        "default": {
+            "align": "center",
+            "color": "",
+            "size": "1.5em",
+            "underline": false,
+            "desc": "默认章节样式：居中、1.5em、黑色、无下划线"
+        },
+        "split_title": {
+            "align": "center",
+            "color": "#8B0000",
+            "size": "1.4em",
+            "underline": true,
+            "split": true,
+            "num_color": "#555555",
+            "num_size": "1em",
+            "desc": "章节号与章名拆两行：上行小号灰色章节号，下行大号深红章名"
+        }
+    },
+    "volume": {
+        "default": {
+            "vol_split": true,
+            "vol_num_color": "#555555",
+            "vol_num_size": "1.2em",
+            "vol_color": "#8B0000",
+            "vol_size": "2.5em",
+            "vol_gap": "0.6em",
+            "desc": "默认卷名样式：拆两行，卷号小灰、卷名大号深红"
+        }
+    }
+}

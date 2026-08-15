@@ -1,0 +1,24 @@
+# 登录 Cookie（绝对不提交）
+pixiv_cookie.txt
+
+# 下载产物（章节/插图/索引/成书——可能含付费或 R-18 内容，绝不提交）
+novels/
+series/
+import_records.csv
+*.epub
+*.txtd *
+# 根目录的成书 txt（全书/神话生物攻略手册等 merge 产物）
+/*.txt
+!pixiv_cookie.example.txt
+
+# 会话导出（含完整对话记录，隐私敏感，不提交）
+session_export_*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 日志（按需取消注释以纳入版本管理）
+logs/

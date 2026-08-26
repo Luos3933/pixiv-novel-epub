@@ -155,105 +155,167 @@ series/series_<ID>/
 
 ## 整理：txt_file_processing.py
 
-下载并完成人工校对后，使用子命令进行后处理（不会在下载时自动调用，保留校对时间窗口）：
+下载并完成人工校对后，使用子命令进行后处理（不会在下载时自动调用，保留校对时间窗口）。`txt_file_processing.py` 提供以下功能：
+
+- **合并出书**：`merge`（多目录合成单文件 txt）
+- **格式化**：`format`（批量标准化）、`format-single`（单文件加空行）
+- **拆卷**：`split`（卷打包文件拆成独立章节）
+- **EPUB 打包**：`epub`（生成电子书）
+- **比对与工具**：`compare` / `punct` / `diff` / `note` / `assemble`
+
+路径参数可写相对路径（相对脚本所在目录）或绝对路径。
+
+### merge — 合并章节为单文件
+
+按章节顺序合并一个或多个目录下所有 txt 为单个文件。多目录时按数字前缀配对，后列目录优先（如 `corrected/` 覆盖 `standardized/`）：
 
 ```bash
-# 按章节顺序合并一个或多个目录下所有 txt 为单个文件。
-# 多目录时按数字前缀配对，后列的目录优先（如 corrected/ 覆盖 standardized/）；
-# --info 默认开启，合并前根据实际参与合并的章节重新统计字数并刷新 000 书籍信息.txt 的『字数』行。
-python txt_file_processing.py merge <输入目录1> [<输入目录2> ...] <输出文件>
-# 例：把改过的章节放在 corrected/、未改的留在 standardized/
+# 把改过的章节放 corrected/、未改的留 standardized/，合并成全书.txt
 python txt_file_processing.py merge standardized/ corrected/ 全书.txt
-# 关闭字数刷新：
+
+# 只合并单一目录
+python txt_file_processing.py merge standardized/ 全书.txt
+```
+
+常用参数：
+
+```bash
+# 关闭字数刷新（--info 默认开启：按实际合并章节重新统计字数并刷新 000 书籍信息.txt 的『字数』行）
 python txt_file_processing.py merge standardized/ corrected/ 全书.txt --no-info
-# 卷名插入：--volumes 同 epub 格式（每卷第一章前插入卷名行，split 生成的 volumes.json 可直接用；
-# 000 书籍信息会补充"卷/篇数：N"行）
+
+# 卷名插入：--volumes 与 epub 同格式，每卷第一章前插入卷名行，000 补充"卷/篇数：N"行
 python txt_file_processing.py merge standardized/ corrected/ 全书.txt --volumes volumes.json
-# 正文首行缩进：--indent 给正文段落加两个全角空格（标题/卷名/000 不缩进）
+
+# 正文首行缩进：给正文段落加两个全角空格（章节标题/卷名/000 不缩进）
 python txt_file_processing.py merge standardized/ corrected/ 全书.txt --indent
+```
 
-# 批量重命名 + 顶部注入章节标题（正文转中文数字，跳过番外）+ 段落空行
-# 同时会自动在输出目录生成 "000 书籍信息.txt"：
-#   - 若能找到 pixiv 系列目录下的 series_<ID>_info.txt，则自动套用模板填充
-#     书名/作者/连载平台/连载状态(N章+M番外+日期)/字数/简介
-#   - 找不到则生成空白占位模板由用户手填
-# --punct：同时把正文英文标点转中文（! → ！、? → ？、" → 按全文奇偶配对 “ ”）；
-#          不加 --punct 则只做重命名/标题/空行，标点保持原样
-# 输出目录可省略：缺省时输出到输入目录同级的 standardized/
+### format — 批量标准化
+
+批量重命名 + 顶部注入章节标题（正文转中文数字，跳过番外）+ 段落空行；同时自动在输出目录生成 `000 书籍信息.txt`（能找到 `series_<ID>_info.txt` 则套模板填充书名/作者/连载状态/字数/简介，否则空白占位）：
+
+```bash
+# 输出目录可省略，缺省输出到输入目录同级的 standardized/
 python txt_file_processing.py format <输入目录> [输出目录] [--punct]
-# 例：format "series/series_<ID>/chapters" --punct   → 输出到 series/series_<ID>/standardized
+# 例：format "series/series_<ID>/chapters" --punct  → 输出到 series/series_<ID>/standardized
+```
 
-# 为单个 txt 段落间加空行（不重命名、不注入标题、不转标点）
+`--punct`：同时把正文英文标点转中文（`!`→`！`、`?`→`？`、`"`→按全文奇偶配对 `“ ”`）；不加则标点保持原样。
+
+### format-single — 单文件加空行
+
+为单个 txt 段落间加空行（不重命名、不注入标题、不转标点）：
+
+```bash
 python txt_file_processing.py format-single <输入文件> <输出文件>
+```
 
-# 逐段比对两个 txt 并输出差异（用于校对：对比下载内容或修改前后；差异同时写日志，
-# 第三个参数缺省时差异报告写 text_differences.txt）
-python txt_file_processing.py compare <文件1> <文件2> [差异输出文件]
+### split — 拆卷
 
-# 标点转换：英文 ! ? " 转中文 ！？“ ”（引号按全文奇偶配对，奇数个会告警；
-# ' 不处理以避免误伤英文撇号）
-python txt_file_processing.py punct <输入文件> [输出文件]   # 后者缺省则原地覆盖
+把「一卷一个文件、卷内章节未划分」的原始下载拆成独立章节（识别 `第X章/番外` 标记行、按顺序修正作者编号错误、全局连续编号）；同时在上级目录生成 `volumes.json`（锚定每卷全局章节范围，供 `--volumes` 用），输出目录自动生成 `000 书籍信息.txt`：
 
-# 拆卷：把"一卷一个文件、卷内章节未划分"的原始下载拆成独立章节
-# （识别第X章/番外标记行、按顺序修正作者编号错误、全局连续编号），
-# 同时在上级目录生成 volumes.json（锚定每卷全局章节范围，供 epub --volumes 用）
-# 输出目录自动生成 000 书籍信息.txt（与 format 一致：有 series info 套模板，否则空白占位）
-# 默认文件名含完整章节标题（003 第3章 雪棠.txt）；--name-only 时只留章节名
-# （003 雪棠.txt，完整标题仍在文件首行）；--punct 同时把正文英文标点转中文
-# --title-len-limit：严格模式，无空格标记额外要求 ≤20 字（默认关闭，靠"不含句号"判定）
+```bash
 python txt_file_processing.py split <原始目录> <输出目录> [--punct] [--name-only] [--title-len-limit]
+```
 
-# 打包 EPUB：多目录按数字前缀配对、后列优先（校正版覆盖标准化版），
-# 元数据自动取自 000 书籍信息.txt（其次 pixiv 系列信息，--title/--author 可覆盖）
-# 封面：自动识别输入目录/父目录下的 cover.* 或 封面.*（如下载器保存的封面），--cover 可指定
+- `--punct`：同时把正文英文标点转中文
+- `--name-only`：文件名只留章节名（如 `003 雪棠.txt`），完整标题仍在文件首行；默认文件名含完整章节标题（`003 第3章 雪棠.txt`）
+- `--title-len-limit`：严格模式，无空格标记额外要求 ≤20 字（默认关闭，靠「不含句号」判定，兼容长标题网文）
+
+### epub — 打包 EPUB
+
+多目录按数字前缀配对、后列优先（校正版覆盖标准化版）；元数据自动取自 `000 书籍信息.txt`（其次 pixiv 系列信息，`--title`/`--author` 可覆盖）；自动识别封面：
+
+```bash
+# 基础打包
 python txt_file_processing.py epub <目录1> [<目录2> ...] <输出.epub> [--cover 图片路径]
+python txt_file_processing.py epub standardized/ corrected/ 全书.epub
+```
 
-# 卷/篇支持：--volumes 导入 JSON 配置，每卷独立占页并作为目录的上级嵌套
-# [{"name": "第一卷 示例卷名", "start": 1, "end": 17}, ...]
+**卷/篇支持**（`--volumes`）：JSON 列表 `[{"name": "第一卷 示例卷名", "start": 1, "end": 17}]`，每卷独立占页并作为目录的上级嵌套：
+
+```bash
 python txt_file_processing.py epub standardized/ corrected/ 全书.epub --volumes volumes.json
+```
 
-# 插图支持：正文残留的【插图: xxx】标记自动原位内嵌图片（插图库/ 或 illustrations/ 中查找）
-# 人工删掉标记后：插图信息文件（txt 或 JSON 两种格式，自动识别）条目放到对应章节末尾
+**插图支持**：正文残留的 `【插图: xxx】` 标记自动原位内嵌图片（从 `插图库/` 或 `illustrations/` 查找）；人工删掉标记后可用插图信息文件（txt/JSON 两种格式自动识别）把插图放到对应章节末尾：
+
+```bash
+python txt_file_processing.py epub standardized/ corrected/ 全书.epub --illustrations 插图信息.txt
 # 压缩插图：--image-quality <1-100> 重编码为 JPEG 减小体积（需 Pillow，压缩后未变小则保留原图）
-python txt_file_processing.py epub standardized/ corrected/ 全书.epub --illustrations 插图信息.txt --image-quality 75
+python txt_file_processing.py epub standardized/ corrected/ 全书.epub --image-quality 75
+```
 
-# 章标题样式可配置：对齐 / 颜色 / 字号 / 下划线
+**章标题样式**：对齐/颜色/字号/下划线可配置：
+
+```bash
 python txt_file_processing.py epub standardized/ corrected/ 全书.epub \
     --title-align left --title-color "#8B0000" --title-size 1.2em --title-underline
+```
 
-# 样式预设：存于 epub_styles.json（chapter 章标题 / volume 卷名 两段），按名称一键调用
+**样式预设**（存于 `epub_styles.json`，分 `chapter` 章标题 / `volume` 卷名 两段，按名称一键调用）：
+
+```bash
 python txt_file_processing.py epub --title-styles                       # 列出全部预设（可省略目录/输出参数）
 python txt_file_processing.py epub standardized/ corrected/ 全书.epub --title-style split_title --vol-style default
 python txt_file_processing.py epub standardized/ 全书.epub --title-style default --title-align left
-#   预设基础上微调：--title-align/--title-color/--title-size/--title-underline 优先级高于预设
-#   （--no-title-underline 可关闭预设里的下划线）
-# 拆两行：预设里 split:true + num_color/num_size（章节号行）与 color/size（章名行）各自可调
 ```
 
-#### epub 其他参数
+- 预设基础上微调：`--title-align`/`--title-color`/`--title-size`/`--title-underline` 优先级高于预设（`--no-title-underline` 可关闭预设的下划线）
+- 拆两行：预设里 `split:true` + `num_color`/`num_size`（章节号行）与 `color`/`size`（章名行）各自可调；卷名同理用 `volume` 段的 `vol_split`/`vol_num_color`/`vol_num_size`/`vol_color`/`vol_size`/`vol_gap`
+- 其他参数：`--title "书名" --author "作者"` 覆盖元数据；`--title-styles-file my_styles.json` 自定义样式文件
+
+有书籍信息来源（`000 书籍信息.txt` 或 pixiv 信息）时，epub 会自动在书最前面生成「书籍信息」页（按 000 段落格式渲染，含书名/作者/连载状态/卷篇数/字数/简介），并出现在目录顶部；没有信息来源则不生成。
+
+### compare — 逐段比对
+
+比对两个 txt 的段落差异（用于校对：对比下载内容或修改前后；差异同时写日志，第三个参数缺省时报告写 `text_differences.txt`）：
 
 ```bash
-# 覆盖书名/作者（000 里是占位"未填"时用；优先级高于 000 书籍信息.txt 与 pixiv 信息）
-python txt_file_processing.py epub standardized/ 全书.epub --title "书名" --author "作者"
-
-# 自定义样式文件（默认项目根目录 epub_styles.json）
-python txt_file_processing.py epub standardized/ 全书.epub --title-styles-file my_styles.json
-
-# 卷名样式：在 epub_styles.json 的 "volume" 段加条目后按名调用，
-# 可调卷号/卷名的颜色、字号与两行间距（vol_split 默认 True 拆两行）：
-#   "my_vol": {"vol_split": true, "vol_num_color": "#555555", "vol_num_size": "1.2em",
-#              "vol_color": "#8B0000", "vol_size": "2.5em", "vol_gap": "0.6em"}
-python txt_file_processing.py epub standardized/ 全书.epub --vol-style my_vol
-
-# 章标题拆两行：在 "chapter" 段条目里加 split:true（章节号/章名各自可调颜色字号）：
-#   "my_split": {"split": true, "num_color": "#555555", "num_size": "1em",
-#                "color": "#8B0000", "size": "1.4em", "align": "center", "underline": true}
-python txt_file_processing.py epub standardized/ 全书.epub --title-style my_split
+python txt_file_processing.py compare <文件1> <文件2> [差异输出文件]
 ```
 
-有书籍信息来源（000 书籍信息.txt 或 pixiv 信息）时，epub 会自动在书最前面生成「书籍信息」页（按 000 段落格式渲染，含书名/作者/连载平台/连载状态/字数/简介），并出现在目录顶部；没有信息来源则不生成。
+### punct — 标点转换
 
-路径参数可写相对路径（相对脚本所在目录）或绝对路径。
+把单个 txt 中的英文标点转中文：`!`→`！`、`?`→`？`、`"`→按全文奇偶配对 `“ ”`（奇数个会告警）；`'` 不处理以避免误伤英文撇号：
+
+```bash
+python txt_file_processing.py punct <输入文件> [输出文件]   # 缺省输出则原地覆盖
+```
+
+### diff — 目录级对比
+
+批量对比标准化目录与校正目录，识别五类信息：内容有改 / 仅改了文件名 / 内容一致 / 仅一侧（未校正或新增）。每处段落差异列出行号 + 第一个差异字符 + 两端原文：
+
+```bash
+python txt_file_processing.py diff <标准化目录> <校正目录> [差异报告.txt] [--preview N]
+```
+
+- **按文件名开头数字编号配对**，名字不同但编号一致视为同章节比对内容（校正阶段改名不影响）；无数字前缀的文件（如"附录.txt"）按完整文件名匹配
+- 控制台每文件预览前 3 条差异（`--preview N` 可调整，默认 3），日志与报告保留全部
+
+### note — 修订说明
+
+为校正目录中被修改的章节记录修订说明（存于 `corrected/_revisions.json`）：
+
+```bash
+python txt_file_processing.py note add <校正目录> <编号> --msg "删除作者 PS 与两处错字"
+python txt_file_processing.py note list <校正目录>
+python txt_file_processing.py note remove <校正目录> <编号>
+python txt_file_processing.py note clear <校正目录>
+```
+
+- 记录**按数字编号**（如 `043`），校对时改文件名也不丢失修订记录；`add` 必须传 `--msg`；编号可写纯编号或完整文件名，内部统一规范化
+
+### assemble — 合成分章目录
+
+从标准化目录 + 校正目录合成最终分章目录，生成 `_source_map.txt` 记录来源。可选步骤——只需要单文件成书时直接用 `merge` 即可：
+
+```bash
+python txt_file_processing.py assemble <标准化目录> <校正目录> <输出目录>
+```
+
+- **按数字编号配对**合成：校正目录有的取校正版（输出文件名优先用校正版命名，你改过标题的章节用新标题）、未改的取标准化命名、校正目录新增的也进入最终目录；无数字前缀的文件按完整名匹配
 
 ## 三层流水线工作流（推荐）
 
@@ -297,12 +359,6 @@ python txt_file_processing.py epub "series/series_<ID>/standardized" "series/ser
 #    只用单目录也行：epub "series/series_<ID>/final" 全书.epub
 #    覆盖书名/作者：--title "..." --author "..."
 ```
-
-### 三个新子命令要点
-
-- **`diff <标准化> <校正> [报告]`**：**默认按文件名开头数字编号配对**，名字不同但编号一致视为同章节比对内容；同时识别五类信息：内容有改 / 仅改了文件名 / 内容一致 / 仅一侧（未校正或新增）；每处段落差异列出行号+第一个差异字符+两端原文。控制台每文件预览前 3 条差异（`--preview N` 可调整，默认 3）、日志与报告保留全部。无数字前缀的文件（如"附录.txt"）按完整文件名匹配。
-- **`note <add|remove|list|clear> <校正目录> [文件名或编号] [--msg "..."]`**：维护校正目录下的 `_revisions.json`，**key 使用数字前缀编号**（如 `043`），允许校对时改了文件名也不会丢失修订记录。`add` 必须传 `--msg`；文件名参数可写完整名 `043 xxx.txt` 或纯编号 `043`，内部统一规范化为前缀。
-- **`assemble <标准化> <校正> <输出>`**：**按数字前缀配对**合成最终目录；输出文件名优先采用校正版命名（你改过标题的章节用新标题），未改的取标准化命名；校正目录独有（新增）也进入最终目录；无数字前缀的文件按完整名匹配。自动生成 `_source_map.txt` 记录每文件来源与改名轨迹。
 
 ### split 拆卷要点
 

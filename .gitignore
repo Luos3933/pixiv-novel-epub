@@ -10,6 +10,7 @@ import_records.csv
 # 根目录的成书 txt（全书/神话生物攻略手册等 merge 产物）
 /*.txt
 !pixiv_cookie.example.txt
+!requirements.txt
 
 # 会话导出（含完整对话记录，隐私敏感，不提交）
 session_export_*.json

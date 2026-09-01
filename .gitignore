@@ -4,6 +4,7 @@ pixiv_cookie.txt
 # 下载产物（章节/插图/索引/成书——可能含付费或 R-18 内容，绝不提交）
 novels/
 series/
+.workbuddy/
 import_records.csv
 *.epub
 *.txtd *
@@ -12,8 +13,11 @@ import_records.csv
 !pixiv_cookie.example.txt
 !requirements.txt
 
+/*.bak
+
 # 会话导出（含完整对话记录，隐私敏感，不提交）
 session_export_*.json
+ses_*.json
 
 # Python
 __pycache__/

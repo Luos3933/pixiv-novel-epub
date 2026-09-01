@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import uuid
 import zipfile
@@ -47,10 +48,12 @@ def _file_prefix(filename):
 
 
 def _list_txt_in(directory):
-    """列出目录下所有 .txt 文件名（不保证排序，调用方自行决定）。"""
+    """列出目录下所有 .txt 文件名（不保证排序，调用方自行决定）。
+    跳过 "_" 开头的系统生成文件（_toc.txt / _编号统计.txt / _source_map.txt 等）。"""
     if not os.path.isdir(directory):
         return []
-    return [f for f in os.listdir(directory) if f.lower().endswith('.txt')]
+    return [f for f in os.listdir(directory)
+            if f.lower().endswith('.txt') and not f.startswith('_')]
 
 
 def _build_prefix_index(directory):
@@ -78,6 +81,22 @@ def _build_prefix_index(directory):
     return prefix_map, no_prefix
 
 
+def _compress_ranges(nums):
+    """把升序编号列表压缩为范围串："433、434" -> "433-434"；[1,2,3,7] -> "1-3、7"。"""
+    if not nums:
+        return ''
+    parts = []
+    start = prev = nums[0]
+    for n in nums[1:]:
+        if n == prev + 1:
+            prev = n
+            continue
+        parts.append(f"{start:03d}" if start == prev else f"{start:03d}-{prev:03d}")
+        start = prev = n
+    parts.append(f"{start:03d}" if start == prev else f"{start:03d}-{prev:03d}")
+    return '、'.join(parts)
+
+
 def _int_to_chinese(num):
     """阿拉伯数字转中文数字（如 43 -> 四十三），10-19 写作 十X 而非 一十X。"""
     zh_num = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九']
@@ -101,10 +120,22 @@ def _int_to_chinese(num):
 
 
 def _chinese_to_int(cn):
-    """中文数字转阿拉伯数字（支持十/百/千/万，如 十九->19、一百零三->103）；失败返回 None。"""
+    """
+    中文数字转阿拉伯数字（支持十/百/千/万，如 十九->19、一百零三->103）；失败返回 None。
+
+    逐位风格：全部为数字字且不含单位（如 "一四四"）时按位解读为 144——
+    外来网文常见作者把 144 写成"一四四"，旧逻辑会误算成 4。
+    """
     digits = {'零': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
               '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
     units = {'十': 10, '百': 100, '千': 1000, '万': 10000}
+    if not cn:
+        return None
+    if all(ch in digits for ch in cn):
+        if len(cn) > 4:
+            return None
+        val = int(''.join(str(digits[ch]) for ch in cn))
+        return val if val > 0 else None
     total = 0
     section = 0
     number = 0
@@ -129,6 +160,74 @@ def _chinese_to_int(cn):
 def _sanitize_filename_part(text):
     """清理章节标题中不能出现在 Windows 文件名里的字符。"""
     return re.sub(r'[\\/:*?"<>|]', ' ', text).strip()
+
+
+# 编码评分用常见汉字参考集（简繁混收：GBK 简体与 Big5 繁体来源都能得高分，
+# 错误解码产生的生僻字/扩展区字符会拉低占比，以此区分 gb18030 与 big5）
+_COMMON_HAN = frozenset(
+    '的一是不了在人有我他她它这中大来上和国说们到为地也子时道出而要就'
+    '下得可你年生会自着去之过家学对里后么小好作分多天能同行见用与行'
+    '沒有這個們時說會來對學國過後麼東車馬鳥龍風飛門問間書長樂體點'
+)
+
+
+def _detect_encoding(path):
+    """
+    探测文本文件编码，供 split/toc 读取外来整本 txt 使用（项目输出统一 UTF-8，
+    但外来下载源常见 GBK/GB2312/Big5）。
+
+    策略：
+    1. BOM 优先：utf-8 BOM -> utf-8-sig；FF FE / FE FF -> utf-16
+    2. 严格 UTF-8 解码成功 -> utf-8
+    3. 否则 gb18030 / big5 各解码一次，按「常见汉字占汉字总数比例」评分择优
+       （gb18030 四字节区几乎不会解码失败，错编码时会产生大量生僻字，
+       占比评分能有效区分简体 GBK 与繁体 Big5 来源）
+    返回编码名（Python codec 别名）。
+    """
+    with open(path, 'rb') as f:
+        data = f.read()
+    if data.startswith(b'\xef\xbb\xbf'):
+        return 'utf-8-sig'
+    if data[:2] in (b'\xff\xfe', b'\xfe\xff'):
+        return 'utf-16'
+    try:
+        data.decode('utf-8')
+        return 'utf-8'
+    except UnicodeDecodeError:
+        pass
+    best_enc, best_score = 'gb18030', -1.0
+    for enc in ('gb18030', 'big5'):
+        try:
+            text = data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        han = [ch for ch in text if '\u4e00' <= ch <= '\u9fff']
+        score = (sum(1 for ch in han if ch in _COMMON_HAN) / len(han)
+                 if han else 0.0)
+        if score > best_score:
+            best_enc, best_score = enc, score
+    return best_enc
+
+
+def _read_text_lines(path):
+    """
+    按探测到的编码读取文本文件并按行拆分（\r\n/\n 统一 splitlines）。
+    非 UTF-8 时打印日志告知（输出文件仍统一写 UTF-8，符合项目约定）。
+    """
+    enc = _detect_encoding(path)
+    if enc not in ('utf-8', 'utf-8-sig'):
+        logger.info(f"检测到非 UTF-8 编码（{enc}），自动转换读取: {path}")
+    with open(path, 'r', encoding=enc) as f:
+        return f.read().splitlines()
+
+
+def _read_text_auto(path):
+    """按探测到的编码读取整个文本文件内容（str）。"""
+    enc = _detect_encoding(path)
+    if enc not in ('utf-8', 'utf-8-sig'):
+        logger.info(f"检测到非 UTF-8 编码（{enc}），自动转换读取: {path}")
+    with open(path, 'r', encoding=enc) as f:
+        return f.read()
 
 
 def _load_volumes_file(volumes_file):
@@ -287,6 +386,8 @@ class TxtFileMerger:
             for fname in os.listdir(d):
                 if not fname.lower().endswith('.txt'):
                     continue
+                if fname.startswith('_'):
+                    continue  # 系统生成文件（_toc.txt 等）不参与合并
                 prefix = _file_prefix(fname)
                 # 用前缀（或完整名）作为合并键；000 书籍信息统一归到 "000" 键
                 key = prefix if prefix is not None else fname
@@ -572,8 +673,8 @@ class BookInfoGenerator:
         for fname in os.listdir(output_dir):
             if not fname.lower().endswith('.txt'):
                 continue
-            # 跳过我们自己生成的 000
-            if fname.startswith('000 '):
+            # 跳过我们自己生成的 000 与 "_" 开头系统文件
+            if fname.startswith(('000 ', '_')):
                 continue
             if '番外' in fname:
                 extra_count += 1
@@ -661,7 +762,7 @@ class BookInfoGenerator:
         for fname in os.listdir(directory):
             if not fname.lower().endswith('.txt'):
                 continue
-            if fname.startswith('000 '):
+            if fname.startswith(('000 ', '_')):
                 continue
             try:
                 with open(os.path.join(directory, fname), 'r', encoding='utf-8') as f:
@@ -688,7 +789,7 @@ class BookInfoGenerator:
             for fname in os.listdir(d):
                 if not fname.lower().endswith('.txt'):
                     continue
-                if fname.startswith('000 '):
+                if fname.startswith(('000 ', '_')):
                     continue
                 prefix = _file_prefix(fname)
                 key = prefix if prefix is not None else fname
@@ -904,8 +1005,9 @@ class BatchTxtFileFormatter:
         if not os.path.exists(self.output_folder):
             os.makedirs(self.output_folder)
 
-        # 获取所有 .txt 文件
-        files = [f for f in os.listdir(self.input_folder) if f.endswith('.txt')]
+        # 获取所有 .txt 文件（跳过 "_" 开头系统文件，与 split 输入过滤约定一致）
+        files = [f for f in os.listdir(self.input_folder)
+                 if f.endswith('.txt') and not f.startswith('_')]
 
         # 必须先按前面的数字编号排序，保证章节顺序不乱
         def sort_key(filename):
@@ -1605,20 +1707,92 @@ class DirectoryAssembler:
         }
 
 
+# split 拆分识别配置默认值（split_config.json 可覆盖；文件缺失时自动生成示例模板）
+SPLIT_CONFIG_DEFAULTS = {
+    # 章节编号连续性校验上限：新识别的章节编号比当前最高已识别编号**回退**超过该值时，
+    # 不视为章节标记（该行并入上一章正文，并记入编号统计的「被连续性校验拒绝」清单）。
+    # 防正文短行（如"005般的几个同学……"）被误判为跳回第 5 章；
+    # 同号同题的作者重发放行。前向跳变不校验（缺号块属正常现象）。0 或 null 关闭校验。
+    "chapter_gap_limit": 10,
+    # 章节标记行最大长度（整行字符数，超过视为正文行）
+    "marker_max_len": 40,
+}
+
+# split_config.json 示例模板（首次运行 split 时若文件缺失会自动生成此内容）
+SPLIT_CONFIG_SAMPLE = {
+    "_说明": {
+        "chapter_gap_limit": "章节编号连续性校验：新识别编号比最高编号回退超过该值时"
+                             "不视为章节标记（并入上一章正文，记入 _编号统计.txt 的"
+                             "「被连续性校验拒绝」清单；同号同题重发放行）；前向跳变"
+                             "不校验（缺号块正常）；0 或 null 关闭校验",
+        "marker_max_len": "章节标记行最大长度（整行字符数），超过视为正文行",
+    },
+    "chapter_gap_limit": 10,
+    "marker_max_len": 40,
+}
+
+
+def _load_split_config(config_file=None):
+    """
+    读取 split 拆分识别配置（默认项目根目录 split_config.json，与 epub_styles.json
+    同目录）。文件缺失时自动生成示例模板；单键非法（非非负整数）时回退默认值。
+    返回完整配置 dict（SPLIT_CONFIG_DEFAULTS 的键全覆盖）。
+    """
+    cfg = dict(SPLIT_CONFIG_DEFAULTS)
+    if config_file is None:
+        config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   'split_config.json')
+    if not os.path.isfile(config_file):
+        try:
+            with open(config_file, 'w', encoding='utf-8') as f:
+                f.write(json.dumps(SPLIT_CONFIG_SAMPLE, ensure_ascii=False, indent=4) + '\n')
+            logger.info(f"未找到拆分配置文件，已生成默认模板: {config_file}")
+        except OSError as e:
+            logger.warning(f"无法创建拆分配置文件 {config_file}: {e}")
+        return cfg
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"拆分配置文件解析失败（{config_file}），使用默认值: {e}")
+        return cfg
+    if not isinstance(data, dict):
+        logger.warning(f"拆分配置文件应为 JSON 对象，使用默认值: {config_file}")
+        return cfg
+    for key, default in SPLIT_CONFIG_DEFAULTS.items():
+        v = data.get(key, default)
+        # None/null 表示关闭该功能（chapter_gap_limit=null 即关闭连续性校验）；
+        # bool 是 int 的子类，显式排除
+        if v is None:
+            cfg[key] = 0
+        elif isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            logger.warning(f"拆分配置 {key} 应为非负整数或 null，收到 {v!r}，"
+                           f"使用默认值 {default}")
+        else:
+            cfg[key] = v
+    return cfg
+
+
 class VolumeSplitter:
     """
     拆分卷打包的原始下载文件为独立章节（用于 pixiv 系列中"一卷一个文件、
-    卷内全部章节未划分"的情况）。
+    卷内全部章节未划分"的情况；外来整本 txt 也走这里，输入可为单个 txt 文件）。
 
     处理流程（按输入目录文件数字前缀顺序，一个文件视为一卷）：
       1. 识别卷内的章节标记行（独立成行、整行长度 <= 40）：
-           - "第一章 xxx" / "第11章 xxx" / "第一章：xxx"（中文或阿拉伯数字）
+           - "第一章 xxx" / "第11章 xxx" / "第一章：xxx"（中文或阿拉伯数字；
+             中文数字支持逐位风格 "第一四四章" = 144）
+           - 纯数字编号（外来网文常见）："407章 xxx" / "407：章" /
+             "437 暗中危机" / "588对战阿法摩"（无分隔符粘连，靠"不含句号"判定）
            - "番外：xxx" / "番外 xxx"
       2. 按标记行拆出各章内容；第一个标记之前的内容视为卷标题/前言，跳过
       3. 修正作者标号错误：按出现顺序重排章节编号（以首个可解析标记的编号为起点，
          例如原文 第二十章/第十九章/第二十章 -> 第十九章/第二十章/第二十一章；
-         中文数字风格保持中文、阿拉伯数字风格保持阿拉伯）
+         编号风格沿用首个编号：中文数字保持中文、阿拉伯保持阿拉伯、纯数字标记
+         统一补成"第X章"式）；--no-renumber 可关闭重排保留原编号
       4. 按全局顺序导出 "<3位编号> <章节标题>.txt" 到输出目录（standardized）；
+         --no-renumber 时导出编号沿用原章节编号（编号缺口即漏章线索）；
+         --unify-title 时标题统一为 "第X章 章名"（中文数字+空格，冒号/粘连归一）；
          --name-only 时文件名只含章节名不带章节号（如 "003 雪棠.txt"，完整标题
          保留在文件首行），默认文件名含完整标题（如 "003 第3章 雪棠.txt"）
       5. 在输出目录的上级目录（series_xxx）生成 volumes.json，锚定每卷的全局
@@ -1627,78 +1801,222 @@ class VolumeSplitter:
 
     # 章节标记：第X章/第X话/第X节/第X回（含小数点容忍，但重排仅支持整数编号）
     MARKER_RE = re.compile(r'^第([一二三四五六七八九十百千万零两0-9.]+)([章话节回])')
-    # 番外标记：仅"番外"单独成行或"番外：xxx"（避免把"番外内容"等正文行误识别为标记）
-    FANWAI_RE = re.compile(r'^番外([：:].*)?$')
+    # 番外标记："番外"单独成行 / "番外：xxx" / "番外 xxx"（空格分隔）；
+    # 含句号的行在 _parse_marker 里另行排除，防"番外 一段正文。"误判
+    FANWAI_RE = re.compile(r'^番外([：:\s].*)?$')
+    # 纯数字+章话节回后缀（无"第"）："407章 xxx" / "407章：xxx"
+    BARE_SUFFIX_RE = re.compile(r'^(\d{1,4})([章话节回])')
+    # 纯数字编号开头："407：章" / "437 暗中危机" / "588对战阿法摩"
+    BARE_HEAD_RE = re.compile(r'^(\d{1,4})')
+    # 无分隔符粘连（"588对战阿法摩"）判定时排除的日期/数量词起始字，
+    # 防"500万像素""300斤大米没扛动"这类正文短行被误判为章节标记
+    GLUED_BLOCK_CHARS = '年月日时分秒个十百千万亿倍元斤米人次度里的是在和与就才都很也又把被让给'
+    # 疑似标记扫描用的强排除集：只排数量词/日期起始（「300多个」「2024年」），
+    # 放行虚词起始（「552在你家…」「570给爷爷…」——网文标题常见形式）
+    GLUED_QUANTITY_STARTERS = '年月日时分秒个十百千万亿倍元斤米人次度里多约近余'
 
     def __init__(self, input_dir, output_dir, punct=False, name_only=False,
-                 title_len_limit=False):
+                 title_len_limit=False, unify_title=False, num_style='chinese',
+                 renumber=True, max_gap=None, marker_max_len=None):
         """
         参数:
-        - input_dir: 卷打包的原始章节 txt 所在目录
+        - input_dir: 卷打包的原始章节 txt 所在目录；也可以直接传整本 txt 文件
+                     路径（视为单卷拆分，外来网文常见形态）
         - output_dir: 拆分后的章节输出目录（如 standardized/）
         - punct: 是否同时对正文做英文标点 -> 中文标点转换
         - name_only: True 时文件名只保留章节名不带章节号（完整标题仍在文件首行）；
                      默认 False（文件名含完整章节标题）
         - title_len_limit: 严格模式，无空格的章节标记额外要求整行 <= 20 字符
                      （默认 False：不限长度，仅靠"不含句号"判定，兼容长标题网文）
+        - unify_title: 标题统一为 "第X章 章名"（编号转中文数字、冒号/粘连归一为
+                     空格、纯数字编号补"第/章"后缀），适合章节号类型混杂的外来网文
+        - num_style: unify_title 时的编号风格，'chinese'（第一章）/ 'arabic'（第407章）
+        - renumber: 是否按出现顺序重排章节编号（默认 True）；False 时保留原编号，
+                     导出文件名前缀沿用原编号，编号缺口/重复会在日志中报告
+        - max_gap: 章节编号连续性校验上限（编号比上一章回退超过该值的标记不视为
+                     章节，前向跳变不校验）；None 时取 split_config.json 的
+                     chapter_gap_limit
+        - marker_max_len: 章节标记行最大长度；None 时取 split_config.json 的
+                     marker_max_len
         """
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.punct = punct
         self.name_only = name_only
         self.title_len_limit = title_len_limit
+        self.unify_title = unify_title
+        self.num_style = num_style
+        self.renumber = renumber
+        # 拆分识别配置（split_config.json 为底，显式参数覆盖）
+        cfg = _load_split_config()
+        self.gap_limit = cfg['chapter_gap_limit'] if max_gap is None else max_gap
+        self.marker_max_len = (cfg['marker_max_len'] if marker_max_len is None
+                               else marker_max_len)
+        # 被连续性校验拒绝的疑似标记行 [(行号, 行文本)]（_split_file 填充，
+        # 记入 _编号统计.txt 供人工核对）
+        self._rejected_markers = []
 
     def _parse_marker(self, line):
         """
-        判断一行是否为章节标记行。返回 (marker, num, style)：
-          marker: 完整标记行文本（如 "第一章 回家的召唤"）
-          num:    编号整数（无法解析时 None）
-          style:  'chinese' / 'arabic'（编号风格，无法解析时 None）
-        不是标记行返回 None。
+        判断一行是否为章节标记行。返回标记 dict，不是标记行返回 None：
+          {"raw": 原标记行, "num": 编号int|None, "style": 风格,
+           "suffix": '章'|'话'|'节'|'回'|None, "sep": 分隔符, "title": 章名}
+        风格 style：
+          'chinese'  "第X章 xxx"（中文数字）
+          'arabic'   "第407章 xxx"（阿拉伯数字）
+          'bare_sfx' "407章 xxx"（纯数字+章话节回，无"第"）
+          'bare'     "407：章" / "437 暗中危机" / "588对战阿法摩"（纯数字编号）
+          'fanwai'   番外（不参与编号）；编号无法解析时 style 为 None
         """
         s = line.strip()
-        if not s or len(s) > 40:
+        if not s or len(s) > self.marker_max_len:
             return None
-        m = VolumeSplitter.MARKER_RE.match(s)
+
+        def _mk(raw, num, style, suffix, sep, title):
+            return {"raw": raw, "num": num, "style": style,
+                    "suffix": suffix, "sep": sep, "title": title}
+
+        def _sep_title(rest):
+            """拆出编号后的分隔符与章名（冒号/顿号保留原字符，空格归一，粘连为空）。"""
+            if not rest:
+                return '', ''
+            ch = rest[0]
+            if ch in '：:、，,':
+                return ch, rest[1:].strip()
+            if ch.isspace():
+                return ' ', rest.strip()
+            return '', rest.strip()
+
+        m = self.MARKER_RE.match(s)
         if m:
             rest = s[m.end():]
-            # 编号后跟空格/冒号/行尾 -> 肯定是标记；
+            # 编号后跟空格/冒号/顿号/行尾 -> 肯定是标记；
             # 编号后直接跟文字（作者漏写空格，如"第二章天使降临我身边？"）：
             #   判定为章节标题的核心条件：不含句号「。」（标题是一个短语，可带？！
             #   但几乎不带句号；正文段落必有句号等句子终止符，如"第三章内容。"）
             #   title_len_limit 开启时额外要求整行 <= 20 字符（防长正文误判，
             #   但可能误伤长标题网文，故默认关闭）
-            if rest and not rest[0].isspace() and rest[0] not in '：:':
+            if rest and not rest[0].isspace() and rest[0] not in '：:、，,':
                 if '。' in s or (self.title_len_limit and len(s) > 20):
                     return None
             num_text = m.group(1)
+            suffix = m.group(2)
+            sep, title = _sep_title(rest)
             if re.fullmatch(r'\d+', num_text):
-                return s, int(num_text), 'arabic'
+                return _mk(s, int(num_text), 'arabic', suffix, sep, title)
             num = _chinese_to_int(num_text)
             if num is not None:
-                return s, num, 'chinese'
-            return s, None, None
-        if VolumeSplitter.FANWAI_RE.match(s):
-            # 番外不算编号（保持原样不重排）
-            return s, None, 'fanwai'
+                return _mk(s, num, 'chinese', suffix, sep, title)
+            return _mk(s, None, None, suffix, sep, title)
+        if self.FANWAI_RE.match(s):
+            # 番外不算编号（保持原样不重排）；含句号的行视为正文，防误判
+            if '。' in s:
+                return None
+            return _mk(s, None, 'fanwai', None, '', s)
+        # "407章 xxx" / "407章：xxx"（纯数字+章/话/节/回后缀，无"第"）
+        m = self.BARE_SUFFIX_RE.match(s)
+        if m:
+            rest = s[m.end():]
+            glued = bool(rest) and not rest[0].isspace() and rest[0] not in '：:、，,'
+            if '。' in s or (glued and self.title_len_limit and len(s) > 20):
+                return None
+            sep, title = _sep_title(rest)
+            return _mk(s, int(m.group(1)), 'bare_sfx', m.group(2), sep, title)
+        # 纯数字编号："407：章" / "437 暗中危机" / "588对战阿法摩" / "401："（空标题）
+        m = self.BARE_HEAD_RE.match(s)
+        if m and len(s) > m.end():
+            rest = s[m.end():]
+            ch = rest[0]
+            if ch in '：:、，,':
+                title = rest[1:].strip()
+                if '。' not in s:
+                    return _mk(s, int(m.group(1)), 'bare', None, ch, title)
+            elif ch.isspace():
+                title = rest.strip()
+                if '。' not in s:
+                    return _mk(s, int(m.group(1)), 'bare', None, ' ', title)
+            else:
+                # 无分隔符粘连：靠"不含句号"+起始字排除日期/数量词（见 GLUED_BLOCK_CHARS）
+                if ('。' not in s and ch not in self.GLUED_BLOCK_CHARS
+                        and not (self.title_len_limit and len(s) > 20)):
+                    return _mk(s, int(m.group(1)), 'bare', None, '', rest.strip())
         return None
+
+    def _unified_marker(self, mk):
+        """
+        --unify-title：把可编号标记统一为 "第{num}{suffix} {title}"。
+        默认中文数字（第一章）；num_style='arabic' 时用阿拉伯数字（第407章）。
+        冒号/顿号/粘连统一归一为空格；纯数字编号补"第"与"章话节回"后缀。
+        """
+        suffix = mk["suffix"] or '章'
+        if self.num_style == 'arabic':
+            num_str, style = str(mk["num"]), 'arabic'
+        else:
+            num_str, style = _int_to_chinese(mk["num"]), 'chinese'
+        title = mk["title"].strip()
+        raw = f"第{num_str}{suffix} {title}" if title else f"第{num_str}{suffix}"
+        return {"raw": raw, "num": mk["num"], "style": style, "suffix": suffix,
+                "sep": ' ' if title else '', "title": title}
 
     def _split_file(self, path):
         """
         读取单个卷文件，返回 (segments, preamble)：
-          segments: [{"marker": 原标记行, "title": 修正后标题, "lines": [正文行...]}, ...]
+          segments: [{"marker": 原标记行, "mk": 标记解析结果, "title": 标题,
+                      "lines": [正文行...]}, ...]
           preamble: 第一个标记之前的非空行列表（卷标题/前言，跳过不导出）
+
+        章节编号连续性校验（split_config.json 的 chapter_gap_limit，默认 10）：
+        新识别编号比**当前最高已识别编号**回退超过上限的标记行默认不视为章节
+        标记（该行并入上一章正文，记入 self._rejected_markers，最终写入
+        _编号统计.txt 供人工核对）。防正文短行（如"005般的几个同学……"）在
+        第 475 章附近被误判为"跳回第 5 章"。**前向跳变不校验**——网文断更/
+        漏发造成的缺号块（如 424 之后缺 425~434 直接跳 435）是正常现象，由
+        缺失编号清单报告。豁免：大幅回退的标记若与之前**同编号且同标题**
+        （归一化去标点后一致）的已识别章节相同，判定为作者重发（重复连载常见
+        形态），正常放行并由重复编号机制顺延导出号。0 或负值关闭校验。
+        每个卷文件独立校验（max_num/_seen_titles 按文件重置，兼容按卷重新编号的书）。
         """
-        with open(path, 'r', encoding='utf-8') as f:
-            lines = f.read().splitlines()
+        # 外来整本 txt 常见 GBK/Big5，编码自动探测（输出统一 UTF-8）
+        lines = _read_text_lines(path)
 
         segments = []
         preamble = []
         current = None
-        for line in lines:
-            marker = self._parse_marker(line)
-            if marker:
-                current = {"marker": marker[0], "title": marker[0], "lines": []}
+        max_num = None      # 当前最高已识别章节编号（回退幅度以此为基准）
+        seen_titles = {}    # 编号 -> 已通过校验的标题归一化集合（同号重发识别用）
+        for line_no, line in enumerate(lines, 1):
+            mk = self._parse_marker(line)
+            if (mk and mk["num"] is not None and mk["style"] not in (None, 'fanwai')
+                    and self.gap_limit and max_num is not None
+                    and mk["num"] < max_num
+                    and max_num - mk["num"] > self.gap_limit):
+                # 大幅回退：同号同题视为作者重发，放行；否则判为疑似误判
+                key = self._norm_title_key(mk["title"] or mk["raw"])
+                if key and key in seen_titles.get(mk["num"], set()):
+                    logger.info(f"  行{line_no} 编号 {mk['num']} 回退 {max_num - mk['num']} 章"
+                                f"但与之前同号同题，判定为作者重发，正常拆分: {line.strip()[:40]}")
+                else:
+                    logger.warning(f"  行{line_no} 疑似误判标记（编号 {mk['num']} 比最高编号"
+                                   f" {max_num} 回退超过 {self.gap_limit} 章），并入上一章正文: "
+                                   f"{line.strip()[:40]}")
+                    self._rejected_markers.append((line_no, line.strip()[:60]))
+                    mk = None  # 按正文行处理（落入下方 current["lines"]）
+            if mk:
+                if (self.unify_title and mk["num"] is not None
+                        and mk["style"] not in (None, 'fanwai')):
+                    mk = self._unified_marker(mk)
+                title = mk["raw"]
+                if (mk["style"] == 'bare' and mk["num"] is not None
+                        and not mk["title"]):
+                    # 空标题纯编号标记（如 "401："）：占位 "第401章"，
+                    # 避免导出文件名/标题行只剩编号+冒号
+                    title = f"第{mk['num']}{mk['suffix'] or '章'}"
+                if mk["num"] is not None and mk["style"] not in (None, 'fanwai'):
+                    max_num = mk["num"] if max_num is None else max(max_num, mk["num"])
+                    seen_titles.setdefault(mk["num"], set()).add(
+                        self._norm_title_key(mk["title"] or mk["raw"]))
+                current = {"marker": mk["raw"], "mk": mk,
+                           "title": title, "lines": []}
                 segments.append(current)
             elif current is None:
                 if line.strip():
@@ -1707,47 +2025,61 @@ class VolumeSplitter:
                 current["lines"].append(line)
         return segments, preamble
 
+    @staticmethod
+    def _norm_title_key(title):
+        """标题归一化：仅保留中英文与数字（去空白/标点/（N爆）等修饰差异），
+        供「同号同题重发」识别。"""
+        return re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]', '', title or '')
+
     def _renumber_segments(self, segments):
         """
         按出现顺序修正章节编号（修正作者标号错误，如重复/回退的编号）。
-        以第一个可解析编号为起点，按可编号章节的出现顺序依次递增；
-        番外等无法解析编号的标记保持原样且不占编号。返回 (segments, fixed_count)。
+        以第一个可解析编号为起点，按可编号章节的出现顺序依次递增；番外等
+        无法解析编号的标记保持原样且不占编号。返回 (segments, fixed_count)。
+
+        编号风格沿用首个编号的风格（中文数字保持中文、阿拉伯保持阿拉伯、
+        纯数字标记补成"第X章"式），全书编号样式保持一致；
+        编号后的衔接沿用原分隔符（冒号/空格），粘连（作者漏写）补空格。
         """
         first_num = None
-        style = None
+        base_style = None
         for seg in segments:
-            _, num, st = self._parse_marker(seg["marker"])
-            if num is not None:
-                first_num, style = num, st
+            mk = seg["mk"]
+            if mk["num"] is not None and mk["style"] not in (None, 'fanwai'):
+                first_num, base_style = mk["num"], mk["style"]
                 break
+        if first_num is None or base_style is None:
+            return segments, 0
 
         fixed_count = 0
         counter = 0
         for seg in segments:
-            _, num, _st = self._parse_marker(seg["marker"])
-            if num is None or style is None:
+            mk = seg["mk"]
+            if mk["num"] is None or mk["style"] in (None, 'fanwai'):
                 continue
             new_num = first_num + counter
             counter += 1
-            old_prefix = re.match(r'^(第[一二三四五六七八九十百千万零两0-9.]+)([章话节回])',
-                                  seg["marker"])
-            if not old_prefix:
-                continue
-            suffix = old_prefix.group(2)
-            if new_num != num:
+            if new_num != mk["num"]:
                 fixed_count += 1
-            if style == 'chinese':
-                new_marker = f"第{_int_to_chinese(new_num)}{suffix}"
+            # 重排头：按首个编号的风格统一形状（bare/bare_sfx 也补成 第X章 式）
+            suffix = mk["suffix"] or '章'
+            if base_style == 'chinese':
+                head = f"第{_int_to_chinese(new_num)}{suffix}"
+            elif base_style == 'arabic':
+                head = f"第{new_num}{suffix}"
+            elif base_style == 'bare_sfx':
+                head = f"{new_num}{suffix}"
+            else:  # 'bare'：纯数字编号，沿用原形状
+                head = f"{new_num}"
+            title = mk["title"].rstrip()
+            if not title:
+                seg["title"] = head
             else:
-                new_marker = f"第{new_num}{suffix}"
-            # 编号后的衔接：原标记编号后是空格/冒号则保留原样；
-            # 无空格（作者漏写，如"第二章天使降临"）则补一个空格，
-            # 让输出统一为 "第二十二章 天使降临"
-            rest = seg["marker"][old_prefix.end():]
-            if rest and not rest[0].isspace() and rest[0] not in '：:':
-                seg["title"] = (new_marker + ' ' + rest.rstrip())
-            else:
-                seg["title"] = (new_marker + rest.rstrip())
+                # 编号后的衔接：原分隔符（空格/冒号/顿号）保留；
+                # 无分隔符（作者漏写，如"第二章天使降临"）则补一个空格，
+                # 让输出统一为 "第二十二章 天使降临"
+                sep = mk["sep"] or ' '
+                seg["title"] = head + sep + title
         return segments, fixed_count
 
     @staticmethod
@@ -1765,76 +2097,157 @@ class VolumeSplitter:
                 return name
         return s
 
+    def _alloc_out_num(self, preferred):
+        """
+        分配导出文件编号：--no-renumber 时优先用章节原编号（编号缺口即漏章线索），
+        原编号重复或缺失（番外等）时顺延找空位；默认（重排）模式按全局顺序递增。
+        """
+        if preferred is not None and preferred not in self._used_nums:
+            self._used_nums.add(preferred)
+            self._last_out = preferred
+            return preferred
+        if preferred is not None:
+            logger.warning(f"  章节原编号 {preferred:03d} 重复出现，顺延分配新编号"
+                           "（--no-renumber 模式下请人工核对）")
+        cand = self._last_out + 1
+        while cand in self._used_nums:
+            cand += 1
+        self._used_nums.add(cand)
+        self._last_out = cand
+        return cand
+
     def split(self):
         """
-        执行拆分：遍历输入目录全部 txt，导出章节并生成 volumes.json。
-        返回统计 dict；无内容可拆返回 None。
+        执行拆分：遍历输入（目录下全部 txt，或整本 txt 单文件），导出章节并
+        生成 volumes.json。返回统计 dict；无内容可拆返回 None。
         """
-        if not os.path.isdir(self.input_dir):
-            logger.error(f"输入目录不存在: {self.input_dir}")
+        # 输入支持整本 txt 单文件（外来网文常见形态），视为单卷
+        if os.path.isfile(self.input_dir) and self.input_dir.lower().endswith('.txt'):
+            src_dir = os.path.dirname(os.path.abspath(self.input_dir)) or '.'
+            txt_files = [os.path.basename(self.input_dir)]
+        elif os.path.isdir(self.input_dir):
+            src_dir = self.input_dir
+            files = [f for f in os.listdir(src_dir) if f.lower().endswith('.txt')]
+            # 过滤索引/元数据文件（series_*_summary.txt / series_*_info.txt 等）与书籍信息占位
+            files = [f for f in files
+                     if not f.startswith(('series_', '_', '000 '))]
+
+            def sort_key(filename):
+                match = re.search(r'^(\d+)', filename)
+                return (0, int(match.group(1))) if match else (1, filename)
+
+            txt_files = sorted(files, key=sort_key)
+        else:
+            logger.error(f"输入路径不存在（应为目录或整本 txt 文件）: {self.input_dir}")
             return None
         os.makedirs(self.output_dir, exist_ok=True)
-
-        files = [f for f in os.listdir(self.input_dir) if f.lower().endswith('.txt')]
-        # 过滤索引/元数据文件（series_*_summary.txt / series_*_info.txt 等）与书籍信息占位
-        files = [f for f in files
-                 if not f.startswith(('series_', '_', '000 '))]
-
-        def sort_key(filename):
-            match = re.search(r'^(\d+)', filename)
-            return (0, int(match.group(1))) if match else (1, filename)
-
-        txt_files = sorted(files, key=sort_key)
         if not txt_files:
             logger.error(f"输入目录 {self.input_dir} 中没有 txt 文件。")
             return None
 
+        self._used_nums = set()
+        self._last_out = 0
+        self._export_log = []  # [{"orig": 原编号|None, "out": 导出编号, "name": 文件名}]
         volumes = []
-        seq = 0
         total_fixed = 0
         total_preamble = 0
 
-        logger.info(f"拆卷开始: {self.input_dir} -> {self.output_dir}（{len(txt_files)} 个文件）")
+        logger.info(f"拆卷开始: {self.input_dir} -> {self.output_dir}"
+                    f"（{len(txt_files)} 个文件"
+                    + ("，unify-title 统一标题" if self.unify_title else "")
+                    + ("，no-renumber 保留原编号" if not self.renumber else "")
+                    + "）")
         for fname in txt_files:
-            path = os.path.join(self.input_dir, fname)
+            path = os.path.join(src_dir, fname)
             segments, preamble = self._split_file(path)
             if preamble:
                 total_preamble += 1
                 logger.info(f"  {fname}: 跳过卷标题/前言 {len(preamble)} 行"
                             f"（{' '.join(p[:20] for p in preamble[:2])}...）")
 
+            stem = re.sub(r'^\d+\s*', '', fname)
+            if stem.lower().endswith('.txt'):
+                stem = stem[:-4]
+            stem = stem.strip()
+
             if not segments:
                 # 无卷内标记：整文件作为一个章节原样导出（标题取文件名，不算卷）
-                title = re.sub(r'^\d+\s*', '', fname)
-                if title.lower().endswith('.txt'):
-                    title = title[:-4]
-                with open(path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                seq += 1
-                out_name = f"{seq:03d} {_sanitize_filename_part(title.strip())}.txt"
+                content = _read_text_auto(path)
+                out_num = self._alloc_out_num(None)
+                out_name = f"{out_num:03d} {_sanitize_filename_part(stem)}.txt"
                 self._write_chapter(out_name, content)
-                logger.info(f"  [{seq:03d}] {title.strip()}（整文件无卷内标记）")
+                self._export_log.append({"orig": None, "out": out_num, "name": out_name})
+                logger.info(f"  [{out_num:03d}] {stem}（整文件无卷内标记）")
                 continue
 
-            segments, fixed = self._renumber_segments(segments)
-            total_fixed += fixed
-            vol_start = seq + 1
-            vol_name = re.sub(r'^\d+\s*', '', fname)
-            if vol_name.lower().endswith('.txt'):
-                vol_name = vol_name[:-4]
-            vol_name = vol_name.strip()
+            fixed = 0
+            if self.renumber:
+                segments, fixed = self._renumber_segments(segments)
+                total_fixed += fixed
 
+            vol_outs = []
             for seg in segments:
-                seq += 1
+                # --no-renumber：导出编号沿用章节原编号（缺口即漏章线索）
+                orig = seg["mk"]["num"]
+                preferred = None if self.renumber else orig
+                out_num = self._alloc_out_num(preferred)
+                vol_outs.append(out_num)
                 title = seg["title"].strip()
                 name = self._chapter_name(title) if self.name_only else title
-                out_name = f"{seq:03d} {_sanitize_filename_part(name)}.txt"
+                out_name = f"{out_num:03d} {_sanitize_filename_part(name)}.txt"
+                self._export_log.append({"orig": orig, "out": out_num, "name": out_name})
                 self._write_chapter(out_name, '\n'.join([title] + seg["lines"]))
-                logger.info(f"  [{seq:03d}] {title}")
-            vol_end = seq
-            volumes.append({"name": vol_name, "start": vol_start, "end": vol_end})
-            logger.info(f"  卷「{vol_name}」: 章节 {vol_start:03d}~{vol_end:03d}"
+                logger.info(f"  [{out_num:03d}] {title}")
+            volumes.append({"name": stem, "start": min(vol_outs), "end": max(vol_outs)})
+            logger.info(f"  卷「{stem}」: 章节 {min(vol_outs):03d}~{max(vol_outs):03d}"
                         + (f"（编号修正 {fixed} 处）" if fixed else ""))
+
+        # 整本 txt 模式：扫描疑似未识别的章节标记行（数字开头、编号落在已识别
+        # 范围内但形式未匹配——如粘连标题首字在防误判字符集、标题与正文同行等），
+        # 列入编号统计文件供人工核对，不参与拆分（零误判风险）。
+        self._suspicious = []
+        if len(txt_files) == 1 and os.path.isfile(self.input_dir):
+            rejected_lines = {ln for ln, _ in self._rejected_markers}
+            origs_set = {e["orig"] for e in self._export_log if e["orig"] is not None}
+            if origs_set:
+                lo, hi = min(origs_set), max(origs_set)
+                all_lines = _read_text_lines(os.path.join(src_dir, txt_files[0]))
+                for i, l in enumerate(all_lines, 1):
+                    if i in rejected_lines:
+                        continue  # 已被连续性校验拒绝并记入专属清单，不重复列入疑似
+                    s = l.strip()
+                    m = re.match(r'^(\d{1,4})(?!\d)', s)
+                    if not m:
+                        continue
+                    n = int(m.group(1))
+                    if lo <= n <= hi and n not in origs_set:
+                        nxt = s[m.end():m.end() + 1]
+                        if (nxt and nxt in self.GLUED_QUANTITY_STARTERS
+                                and ('。' in s or len(s) > 40)):
+                            continue  # 数量词/日期起始且呈正文形态（长行或含句号）才排除；
+                                      # 短行如「628万兽森林」仍列入疑似供人工核对
+                        self._suspicious.append((i, s[:60]))
+                        if len(self._suspicious) >= 100:
+                            break
+
+        # --no-renumber：报告编号缺口与卷范围重叠，便于人工发现漏章/错章
+        gaps = []
+        if not self.renumber:
+            nums = sorted(self._used_nums)
+            for a, b in zip(nums, nums[1:]):
+                if b > a + 1:
+                    lo, hi = a + 1, b - 1
+                    rng = f"{lo:03d}-{hi:03d}" if hi > lo else f"{lo:03d}"
+                    gaps.append(f"{a:03d}->{b:03d}（缺 {rng}）")
+            for i in range(1, len(volumes)):
+                prev, cur = volumes[i - 1], volumes[i]
+                if cur["start"] <= prev["end"]:
+                    logger.warning(f"  卷范围重叠: 「{prev['name']}」{prev['start']:03d}"
+                                   f"~{prev['end']:03d} 与「{cur['name']}」{cur['start']:03d}"
+                                   f"~{cur['end']:03d}，请人工核对")
+        if gaps:
+            logger.warning("编号缺口（原文缺号或有章节未被识别，可用 toc export 复查）: "
+                           + "；".join(gaps))
 
         # volumes.json 写到输出目录的上级（series_xxx 目录），供 epub --volumes 使用
         parent = os.path.dirname(os.path.abspath(self.output_dir)) or self.output_dir
@@ -1845,17 +2258,93 @@ class VolumeSplitter:
         # 末尾自动生成 000 书籍信息.txt（与 format 行为一致：
         # 输入目录上级能找到 series_*_info.txt 则套模板填充，否则空白占位）
         try:
-            BookInfoGenerator(self.input_dir).generate(self.output_dir)
+            BookInfoGenerator(src_dir).generate(self.output_dir)
         except Exception as e:
             logger.warning(f"生成 000 书籍信息.txt 失败: {e}")
 
+        # 章节编号统计文件（缺失/重复清单，方便人工排查漏章与作者错标）
+        report_path = self._write_num_report()
+
+        seq = len(self._used_nums)
         logger.info(f"拆卷完成: 共导出 {seq} 章（{len(volumes)} 卷"
                     + (f"，编号修正 {total_fixed} 处" if total_fixed else "")
+                    + (f"，保留原编号（缺口 {len(gaps)} 处）" if not self.renumber else "")
+                    + (f"，连续性校验拒绝 {len(self._rejected_markers)} 行"
+                       if self._rejected_markers else "")
                     + f"，跳过前言 {total_preamble} 个文件）")
         logger.info(f"卷配置已生成: {vol_path}")
+        logger.info(f"编号统计已生成: {report_path}")
         return {"chapters": seq, "volumes": len(volumes),
                 "fixed": total_fixed, "preamble_files": total_preamble,
-                "volumes_file": vol_path}
+                "volumes_file": vol_path, "gaps": len(gaps),
+                "report": report_path}
+
+    def _write_num_report(self):
+        """
+        生成 _编号统计.txt 到输出目录：按章节标记的**原编号**统计缺失与重复，
+        两种模式（重排/保留原编号）下都能看到原文的断号与错标线索。
+        """
+        log = getattr(self, '_export_log', [])
+        lines = ["# 章节编号统计（split 自动生成，按章节标记原编号统计）"]
+        origs = [e["orig"] for e in log if e["orig"] is not None]
+        unnumbered = len(log) - len(origs)
+        if not origs:
+            lines.append(f"# 共 {len(log)} 章，全部为无编号标记（番外等），无编号统计。")
+        else:
+            nums = sorted(origs)
+            lo, hi = nums[0], nums[-1]
+            missing = []
+            for a, b in zip(nums, nums[1:]):
+                if b > a + 1:
+                    missing.extend(range(a + 1, b))
+            by_orig = {}
+            for e in log:
+                if e["orig"] is not None:
+                    by_orig.setdefault(e["orig"], []).append(e)
+            dups = {n: es for n, es in by_orig.items() if len(es) > 1}
+            lines.append(f"# 共 {len(log)} 章"
+                         + (f"（编号章 {len(origs)}、无编号/番外 {unnumbered}）"
+                            if unnumbered else ""))
+            lines.append(f"# 原编号范围 {lo:03d}~{hi:03d}：缺失 {len(missing)} 个，"
+                         f"重复 {len(dups)} 处")
+            lines.append("")
+            if lo > 1:
+                lines.append(f"## 起始编号提示")
+                lines.append(f"首个编号为 {lo:03d}（1~{lo - 1:03d} 未出现；"
+                             f"若非节选/续篇，请检查开头章节是否漏识别）")
+                lines.append("")
+            if missing:
+                lines.append(f"## 缺失编号（{len(missing)} 个：原文缺号或有章节标记未被识别）")
+                lines.append(_compress_ranges(missing))
+                lines.append("")
+            if dups:
+                lines.append(f"## 重复编号（{len(dups)} 处：作者标号错误，重复章已顺延分配导出编号）")
+                for n in sorted(dups):
+                    for e in dups[n]:
+                        mark = "（原编号）" if e["out"] == n else f"（顺延为 {e['out']:03d}）"
+                        lines.append(f"- {n:03d} {mark}: {e['name']}")
+                lines.append("")
+            rej = getattr(self, '_rejected_markers', [])
+            if rej:
+                lines.append(f"## 被连续性校验拒绝的疑似标记（{len(rej)} 行：编号比最高"
+                             f"编号回退超过 {getattr(self, 'gap_limit', 0)} 章，已并入上一章正文，"
+                             f"未拆分为章节）")
+                for ln, s in rej:
+                    lines.append(f"- 行{ln}: {s}")
+                lines.append("")
+            sus = getattr(self, '_suspicious', [])
+            if sus:
+                lines.append(f"## 疑似未识别的章节标记（{len(sus)} 行：编号落在已识别范围内"
+                             f"但形式未匹配——粘连/含句号/标题正文同行等，请人工核对）")
+                for ln, s in sus:
+                    lines.append(f"- 行{ln}: {s}")
+                lines.append("")
+            if not missing and not dups and lo == 1 and not sus and not rej:
+                lines.append("编号从 001 起连续，无缺失、无重复。")
+        path = os.path.join(self.output_dir, '_编号统计.txt')
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+        return path
 
     def _write_chapter(self, out_name, content):
         """写单个章节文件：标题行 + 段落空行（可选标点转换）。"""
@@ -1865,6 +2354,240 @@ class VolumeSplitter:
         out_path = os.path.join(self.output_dir, out_name)
         with open(out_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(interleave_blank_lines(lines)) + '\n')
+
+
+class TocManager:
+    """
+    章节目录导出 / 回写（配合人工清理连载标注，如 "+上架" "(4爆)" "爆更" 等）。
+
+    - export: 把章节标题清单导出为目录文件（"#" 注释 + "NNN 标题" 每章一行）；
+      输入可以是章节目录（split/format 之后的 standardized/ 等），也可以是
+      整本 txt 文件（用与 split 相同的标记识别规则预览识别结果 + 编号缺口分析，
+      适合在拆分前先看哪些章节标记能被识别、编号哪里断了）。
+    - apply: 读取人工编辑后的目录文件回写：
+      - 输入为章节目录：按 NNN 前缀找到章节文件，重命名并同步替换文件首行标题；
+      - 输入为整本 txt：按导出顺序替换文件中的章节标记行（首次回写自动 .bak 备份）。
+
+    目录文件格式（每章一行，编号用于定位不可改）：
+        # 注释行（忽略）
+        001 第一章 异世界
+        002 ...
+    """
+
+    def __init__(self, path):
+        self.path = path
+
+    # ---- 导出 ----
+
+    def export(self, output_file=None):
+        """导出章节目录。返回统计 dict；失败返回 None。"""
+        if os.path.isdir(self.path):
+            return self._export_dir(output_file)
+        if os.path.isfile(self.path):
+            return self._export_file(output_file)
+        logger.error(f"路径不存在（应为章节目录或整本 txt）: {self.path}")
+        return None
+
+    def _header(self, kind):
+        return [
+            f"# {kind}",
+            f"# 导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "# 格式: 每章一行 'NNN 标题'（NNN 为章节编号，用于定位，不可修改；# 注释与空行忽略）",
+            "# 清理标题中的连载标注（如 +上架 / (4爆) / 爆更求月票）后运行回写:",
+            "#   python txt_file_processing.py toc apply <章节目录或整本txt> <本文件>",
+        ]
+
+    def _export_dir(self, output_file):
+        """章节目录模式：导出 'NNN 文件名标题' 清单 + 编号缺口分析。"""
+        files = [f for f in os.listdir(self.path) if f.lower().endswith('.txt')]
+        files = [f for f in files
+                 if not f.startswith(('series_', '_', '000 '))]
+
+        def sort_key(filename):
+            match = re.search(r'^(\d+)', filename)
+            return (0, int(match.group(1))) if match else (1, filename)
+
+        files = sorted(files, key=sort_key)
+        if not files:
+            logger.error(f"目录 {self.path} 中没有 txt 文件。")
+            return None
+        if output_file is None:
+            output_file = os.path.join(self.path, '_toc.txt')
+
+        lines = self._header("章节目录（章节目录模式导出）")
+        prefixes = []
+        for fn in files:
+            prefix = _file_prefix(fn)
+            if prefix is None:
+                lines.append(f"# 无编号文件（apply 不处理）: {fn}")
+                continue
+            prefixes.append(int(prefix))
+            stem = fn[:-4] if fn.lower().endswith('.txt') else fn
+            title = re.sub(r'^\d+\s*', '', stem).strip()
+            lines.append(f"{int(prefix):03d} {title}")
+        lines.append('')
+        lines.extend(self._gap_comments(prefixes))
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+        logger.info(f"章节目录已导出: {len(prefixes)} 章 -> {output_file}"
+                    + (f"（含 {len(self._gap_comments(prefixes))} 条编号提示）"
+                       if self._gap_comments(prefixes) else ""))
+        return {"mode": "dir", "chapters": len(prefixes), "output_file": output_file}
+
+    def _export_file(self, output_file):
+        """整本 txt 模式：预览 split 将识别到的章节标记 + 编号缺口分析。"""
+        if output_file is None:
+            base = os.path.splitext(os.path.basename(self.path))[0]
+            parent = os.path.dirname(os.path.abspath(self.path))
+            output_file = os.path.join(parent, f"{base}_toc.txt")
+        splitter = VolumeSplitter('', '')
+        raw_lines = _read_text_lines(self.path)  # 外来 txt 编码自动探测
+        markers = []
+        for line in raw_lines:
+            mk = splitter._parse_marker(line)
+            if mk:
+                markers.append(mk)
+        if not markers:
+            logger.error("整本 txt 中未识别到任何章节标记行（可检查标记格式后重试）。")
+            return None
+        lines = self._header("章节标记预览（整本 txt 模式：与 split 识别规则一致）")
+        nums = []
+        pseudo = 0  # 番外/无编号标记的对照号：顺延前一编号，仅作定位对照
+        for mk in markers:
+            if mk["num"] is None:
+                pseudo = max(pseudo, nums[-1] if nums else 0) + 1
+                lines.append(f"{pseudo:03d} {mk['raw']}")
+            else:
+                nums.append(mk["num"])
+                lines.append(f"{mk['num']:03d} {mk['raw']}")
+        lines.append('')
+        comments = self._gap_comments(nums)
+        lines.extend(comments)
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+        logger.info(f"章节标记预览已导出: {len(markers)} 个标记 -> {output_file}"
+                    + (f"（含 {len(comments)} 条编号提示）" if comments else ""))
+        return {"mode": "file", "markers": len(markers), "output_file": output_file}
+
+    @staticmethod
+    def _gap_comments(nums):
+        """编号缺口/重复分析，返回注释行列表（无问题返回空列表）。"""
+        comments = []
+        nums_sorted = sorted(nums)
+        for a, b in zip(nums_sorted, nums_sorted[1:]):
+            if b > a + 1:
+                lo, hi = a + 1, b - 1
+                rng = f"{lo:03d}~{hi:03d}" if hi > lo else f"{lo:03d}"
+                comments.append(f"# 提示: {a:03d} 之后跳到 {b:03d}"
+                                f"（缺 {rng}，可能是漏章或标记未被识别）")
+        seen = {}
+        for n in nums:
+            seen[n] = seen.get(n, 0) + 1
+        for n in sorted(seen):
+            if seen[n] > 1:
+                comments.append(f"# 提示: 编号 {n:03d} 出现 {seen[n]} 次（作者标号错误）")
+        return comments
+
+    # ---- 回写 ----
+
+    def apply(self, toc_file):
+        """回写人工编辑后的目录。返回统计 dict；失败返回 None。"""
+        entries = self._read_toc(toc_file)
+        if entries is None:
+            return None
+        if os.path.isdir(self.path):
+            return self._apply_dir(entries)
+        if os.path.isfile(self.path):
+            return self._apply_file(entries)
+        logger.error(f"路径不存在（应为章节目录或整本 txt）: {self.path}")
+        return None
+
+    def _read_toc(self, toc_file):
+        """读取目录文件，返回 [(编号int, 标题str), ...]；失败返回 None。"""
+        if not os.path.isfile(toc_file):
+            logger.error(f"目录文件不存在: {toc_file}")
+            return None
+        entries = []
+        # 目录文件由人工编辑，可能被记事本等存成 ANSI(GBK)，编码自动探测
+        for ln, line in enumerate(_read_text_lines(toc_file), 1):
+            s = line.strip()
+            if not s or s.startswith('#'):
+                continue
+            m = re.match(r'^(\d{1,4})\s+(.+)$', s)
+            if not m:
+                logger.warning(f"目录文件第 {ln} 行无法解析（应为 'NNN 标题'），跳过: {s}")
+                continue
+            entries.append((int(m.group(1)), m.group(2).strip()))
+        if not entries:
+            logger.error("目录文件中没有可用的章节条目。")
+            return None
+        return entries
+
+    def _apply_dir(self, entries):
+        """目录模式：按 NNN 前缀重命名章节文件，并替换文件首行标题。"""
+        prefix_map, _ = _build_prefix_index(self.path)
+        splitter = VolumeSplitter('', '')
+        updated = missed = skipped_firstline = 0
+        for num, title in entries:
+            fname = prefix_map.get(f"{num:03d}") or prefix_map.get(str(num))
+            if not fname:
+                logger.warning(f"[{num:03d}] 目录中没有该编号的章节文件，跳过: {title}")
+                missed += 1
+                continue
+            old_path = os.path.join(self.path, fname)
+            stem = fname[:-4] if fname.lower().endswith('.txt') else fname
+            old_title = re.sub(r'^\d+\s*', '', stem).strip()
+            new_name = f"{num:03d} {_sanitize_filename_part(title)}.txt"
+            new_path = os.path.join(self.path, new_name)
+            if new_path != old_path and os.path.exists(new_path):
+                logger.error(f"[{num:03d}] 目标文件名已存在，为防覆盖保留原名: {new_name}")
+                continue
+            lines = _read_text_lines(old_path)  # 外来章节文件编码自动探测
+            # 定位首个非空行：是标题行（章节标记行，或与旧文件名标题一致）则替换
+            idx = next((i for i, l in enumerate(lines) if l.strip()), None)
+            replaced = False
+            if idx is not None:
+                first = lines[idx].strip()
+                if splitter._parse_marker(first) or first == old_title:
+                    lines[idx] = title
+                    replaced = True
+            if not replaced:
+                logger.warning(f"[{num:03d}] 首行不是标题行，仅重命名文件: {fname}")
+                skipped_firstline += 1
+            with open(old_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines) + '\n')
+            if new_path != old_path:
+                os.replace(old_path, new_path)
+            updated += 1
+            logger.info(f"  [{num:03d}] {fname} -> {new_name}")
+        logger.info(f"目录回写完成: 更新 {updated} 章"
+                    + (f"，未匹配 {missed} 条" if missed else "")
+                    + (f"，{skipped_firstline} 章仅重命名" if skipped_firstline else ""))
+        return {"mode": "dir", "updated": updated, "missed": missed,
+                "firstline_skipped": skipped_firstline}
+
+    def _apply_file(self, entries):
+        """整本 txt 模式：按导出顺序替换文件中的章节标记行（先备份 .bak）。"""
+        splitter = VolumeSplitter('', '')
+        lines = _read_text_lines(self.path)  # 外来 txt 编码自动探测
+        marker_idx = [i for i, l in enumerate(lines) if splitter._parse_marker(l)]
+        if len(marker_idx) != len(entries):
+            logger.error(f"目录条目数（{len(entries)}）与文件中章节标记数"
+                         f"（{len(marker_idx)}）不一致，中止回写"
+                         "（目录行不可增删，编号列仅作对照）")
+            return None
+        bak = self.path + '.bak'
+        if not os.path.exists(bak):
+            shutil.copy2(self.path, bak)
+            logger.info(f"已备份原文件: {bak}（已存在时不重复覆盖）")
+        for (num, title), i in zip(entries, marker_idx):
+            if lines[i].strip() != title:
+                logger.info(f"  [{num:03d}] {lines[i].strip()} -> {title}")
+            lines[i] = title
+        with open(self.path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+        logger.info(f"整本 txt 回写完成: 替换 {len(entries)} 个标记行 -> {self.path}")
+        return {"mode": "file", "replaced": len(entries), "backup": bak}
 
 
 class EpubBuilder:
@@ -2512,7 +3235,7 @@ h1.book-info-title {{
             for fname in os.listdir(d):
                 if not fname.lower().endswith('.txt'):
                     continue
-                if fname.startswith('000 '):
+                if fname.startswith(('000 ', '_')):
                     continue
                 prefix = _file_prefix(fname)
                 key = prefix if prefix is not None else fname
@@ -3321,19 +4044,36 @@ def _cmd_merge(args):
 
 def _cmd_split(args):
     """
-    拆卷：把"一卷一个文件、卷内章节未划分"的原始下载内容拆成独立章节文件，
-    按全局顺序编号导出到输出目录，并在其上级目录生成 volumes.json。
+    拆卷：把"一卷一个文件、卷内章节未划分"的原始下载内容（或外来整本 txt）
+    拆成独立章节文件，导出到输出目录，并在其上级目录生成 volumes.json。
     """
-    input_dir = _resolve_path(args.input_dir)
+    input_path = _resolve_path(args.input)
     output_dir = _resolve_path(args.output_dir)
 
-    if not os.path.isdir(input_dir):
-        logger.error(f"输入目录不存在: {input_dir}")
+    if not (os.path.isdir(input_path)
+            or (os.path.isfile(input_path) and input_path.lower().endswith('.txt'))):
+        logger.error(f"输入路径不存在（应为目录或整本 txt 文件）: {input_path}")
         return 1
 
-    result = VolumeSplitter(input_dir, output_dir, punct=args.punct,
+    result = VolumeSplitter(input_path, output_dir, punct=args.punct,
                             name_only=args.name_only,
-                            title_len_limit=args.title_len_limit).split()
+                            title_len_limit=args.title_len_limit,
+                            unify_title=args.unify_title,
+                            num_style=args.num_style,
+                            renumber=not args.no_renumber,
+                            max_gap=args.max_gap).split()
+    return 0 if result else 1
+
+
+def _cmd_toc(args):
+    """章节目录导出 / 回写：导出章节标题清单，人工清理后回写。"""
+    path = _resolve_path(args.path)
+    if args.toc_action == 'export':
+        output_file = _resolve_path(args.output_file) if args.output_file else None
+        result = TocManager(path).export(output_file)
+    else:
+        toc_file = _resolve_path(args.toc_file)
+        result = TocManager(path).apply(toc_file)
     return 0 if result else 1
 
 
@@ -3754,11 +4494,13 @@ def build_arg_parser():
 
     p_split = sub.add_parser(
         "split",
-        help="拆卷：把一卷一个文件、卷内章节未划分的原始下载内容拆成独立章节文件"
-             "（识别第X章/番外标记行，按顺序修正作者编号错误，全局连续编号导出到"
-             "输出目录，并在其上级目录生成 volumes.json）"
+        help="拆卷：把一卷一个文件、卷内章节未划分的原始下载内容（或外来整本 txt）"
+             "拆成独立章节文件（识别第X章/番外/纯数字编号标记行，按顺序修正作者"
+             "编号错误，全局连续编号导出到输出目录，并在其上级目录生成 volumes.json）"
     )
-    p_split.add_argument("input_dir", help="卷打包的原始章节 txt 目录（如 chapters/）")
+    p_split.add_argument("input",
+                         help="卷打包的原始章节 txt 目录（如 chapters/），"
+                              "或外来整本 txt 文件（视为单卷）")
     p_split.add_argument("output_dir", help="拆分后章节输出目录（如 standardized/）")
     p_split.add_argument("--punct", action="store_true",
                          help="同时把英文标点 (! ? \") 转为中文标点（！？“ ”）")
@@ -3770,7 +4512,49 @@ def build_arg_parser():
                          help="严格模式：无空格的章节标记额外要求整行 <= 20 字符"
                               "（默认关闭，仅靠\"不含句号\"判定，兼容标题较长的网文；"
                               "开启可进一步防正文长句误判）")
+    p_split.add_argument("--unify-title", action="store_true",
+                         help="标题统一为 \"第X章 章名\"（编号转中文数字、冒号/粘连"
+                              "归一为空格、纯数字编号 407：xxx / 588xxx 补第/章式）。"
+                              "适合章节号类型混杂的外来整本 txt；默认保持各标记原格式")
+    p_split.add_argument("--num-style", choices=["chinese", "arabic"],
+                         default="chinese",
+                         help="--unify-title 时的编号风格：chinese=第一章（默认），"
+                              "arabic=第407章")
+    p_split.add_argument("--no-renumber", action="store_true",
+                         help="关闭章节编号重排：保留作者原编号，导出文件名前缀沿用"
+                              "原编号（编号缺口即漏章线索，缺口/重复会在日志报告）；"
+                              "默认按出现顺序重排为连续编号")
+    p_split.add_argument("--max-gap", type=int, default=None, metavar="N",
+                         help="章节编号连续性校验上限：新识别编号比最高编号回退超过 N 章"
+                              "的标记行不视为章节（并入上一章正文并记入 _编号统计.txt；"
+                              "同号同题的作者重发放行）；前向跳变不校验（缺号块属正常）；"
+                              "0 关闭校验。默认取 split_config.json 的 chapter_gap_limit（10）")
     p_split.set_defaults(func=_cmd_split)
+
+    p_toc = sub.add_parser(
+        "toc",
+        help="章节目录导出/回写：导出章节标题清单，人工清理连载标注（+上架/(4爆)等）后回写"
+    )
+    toc_sub = p_toc.add_subparsers(dest="toc_action", required=True)
+    p_toc_export = toc_sub.add_parser(
+        "export",
+        help="导出章节目录（章节目录模式：NNN 标题；整本 txt 模式：预览标记识别+缺口分析）"
+    )
+    p_toc_export.add_argument("path",
+                              help="章节目录（如 standardized/），或整本 txt 文件")
+    p_toc_export.add_argument("output_file", nargs="?",
+                              help="输出目录文件（缺省：目录模式 <目录>/_toc.txt；"
+                                   "文件模式 <同名>_toc.txt）")
+    p_toc_apply = toc_sub.add_parser(
+        "apply",
+        help="回写人工编辑后的目录（目录模式：重命名+改首行；txt 模式：替换标记行）"
+    )
+    p_toc_apply.add_argument("path",
+                             help="章节目录（按 NNN 重命名文件并替换首行标题），"
+                                  "或整本 txt 文件（按顺序替换章节标记行，自动 .bak 备份）")
+    p_toc_apply.add_argument("toc_file",
+                             help="toc export 导出并人工编辑后的目录文件")
+    p_toc.set_defaults(func=_cmd_toc)
 
     return parser
 

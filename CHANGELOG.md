@@ -1,5 +1,36 @@
 # Changelog
 
+### v0.9.3 - 2026-09-03
+
+完成项目结构模块化重构，引入标准 Python 包、统一命令入口和系统化回归测试，同时保留原有脚本及导入方式的兼容性。
+
+#### 重构
+
+- **项目结构第一阶段重构**：新增 `pyproject.toml`、`pixiv_novel_toolkit/` 正式包和统一 `pixiv-novel` 命令；下载 argparse/交互菜单迁入 `pixiv_novel_toolkit/download_cli.py`，后处理 argparse、命令处理器与根目录相对路径解析迁入 `postprocess_cli.py`，统一入口不再反向导入旧脚本；`pixiv-novel-text` 包安装入口改指向新模块；`cli.py` / `txt_file_processing.py` 收敛为兼容门面，原命令、项目根目录配置位置和旧导入方式继续可用
+- **下载器模块化**：全部 Pixiv API 地址移入 `pixiv_novel_toolkit/downloads/endpoints.py`；默认超时/重试/限速常量、独立请求头构建和 Cookie 文件读取移入 `downloads/config.py`；输出目录、索引文件和旧插图库兼容规则移入 `downloads/paths.py`；HTTP 重试、JSON 解码和图片流式写入移入 `downloads/http.py`；小说响应、封面回退链、封面落盘与两类正文插图本地化移入 `downloads/novel.py`，单章请求→插图→正文落盘及结构化结果移入 `downloads/novel_flow.py`；文件名/简介/标签/章节范围解析移入 `downloads/parsing.py`；CSV 章节记录、metadata 真值源、summary 派生和系列目录移入 `downloads/indexes.py`；系列分页结构、总览/分页元数据回退、info 文本渲染、游标和任务编号移入 `downloads/series.py`；系列总览/完整分页抓取及串行/并发/index-only 执行移入 `downloads/series_flow.py`；CSV 任务标准化、批量成功数统计、缺章扫描和重试后复检移入 `downloads/batch.py`；完整 `PixivNovelScraper` 实现迁入 `downloads/scraper.py`，`cli.py` 直接使用新实现，旧 `pixiv_novel_scraper.py` 仅保留辅助函数重导出及 `requests.get` 历史补丁兼容子类；旧函数、路径方法、可变配置属性及子类覆盖点继续兼容
+- **共享章节核心**：章节标记解析、多目录覆盖规则与卷配置读取提取到 `pixiv_novel_toolkit/chapters/`；标记位置扫描及带回退阈值/同号重发豁免的章节分段提取到 `chapters/scanning.py`，split 与 toc 复用对应扫描接口；章节重编号、标题清理、冲突顺延、缺口描述与 `_编号统计.txt` 渲染提取到 `chapters/numbering.py`；拆卷输入发现/文件排序、卷名推导、文件名清理、疑似标记扫描、卷范围重叠及 `volumes.json` 写入提取到 `chapters/splitting.py`，`split_config.json` 默认值/模板/校验迁入 `chapters/split_config.py`，拆卷总流程迁入 `chapters/splitter.py`；目录/整本 TXT 的 TOC 导出、缺口提示、标题回写和 `.bak` 保护迁移到 `chapters/toc.py`；旧 `VolumeSplitter`/`TocManager` 及 `_load_split_config` 导入方式保持兼容
+- **基础与 EPUB 模块化**：外来文本编码探测/读取移入 `pixiv_novel_toolkit/common/textio.py`；EPUB 模板、默认样式、样式预设、标题 HTML/CSS、OPF/NCX/Nav、插图信息解析及 spine 规划移入 `pixiv_novel_toolkit/epub/`，最终收集章节、封面/插图嵌入、元数据刷新与 ZIP 打包编排迁入 `epub/builder.py`；旧 `EpubBuilder` 导入路径、类属性/方法继续兼容，默认样式文件仍定位项目根目录 `epub_styles.json`
+- **后处理模块化**：Pixiv info、metadata JSON、`000 书籍信息.txt`、日期/万字格式和制作人行纯逻辑统一移入 `pixiv_novel_toolkit/postprocess/book_info.py`，信息源发现、000 生成、合并前章节/字数/卷数刷新迁入 `postprocess/book_info_generator.py`；段落空行、英文转中文标点、批量章节重命名/标题注入与单文件格式化迁入 `postprocess/formatting.py`；多目录后者优先覆盖、卷名插入、正文缩进及整本 TXT 输出迁入 `postprocess/merging.py`；忽略空行的段落差异计算、单文件报告和目录级标准化/校正版对比移入 `postprocess/diffing.py`；人工修订记录移入 `postprocess/revisions.py`，标准化/校正目录覆盖合成与 `_source_map.txt` 写入移入 `postprocess/assembly.py`；旧 `TxtFileMerger`/`BookInfoGenerator`/`BatchTxtFileFormatter`/`TxtFileFormatter`/`TxtFileComparator`/`DirectoryDiffer`/`RevisionsStore`/`DirectoryAssembler` 导入名称及 `EpubBuilder` 方法保持兼容
+
+#### 验证
+
+- 新增 API 端点精确值与业务错误、Cookie/请求头隔离、HTTP 重试/流式写入、封面/单章/插图落盘、CSV 批量/缺章重试、下载参数/索引、系列多页游标与并发执行、章节解析/连续性扫描/同号重发/重编号/编号报告、toc 导出回写、目录覆盖、卷配置、编码读取、样式预设、CLI 注册、split 与最小 EPUB ZIP 结构测试
+- 全量 115 项自动化测试通过；所有 Python 文件编译通过；新旧下载、后处理及统一命令入口帮助页验证通过
+
+### v0.9.2 - 2026-09-01
+
+merge 与 epub 新增**制作人署名**（`--maker`），在书籍信息的「字数」与「简介」之间写入制作人行（txt 输出「TXT制作：xxx」、epub 输出「EPUB制作：xxx」）。
+
+#### 新增
+
+- **merge `--maker 名字`**：合并时在 000 书籍信息.txt 的「字数」行后以独立段落写入/更新「TXT制作：名字」行（`BookInfoGenerator._upsert_maker_line`：先删旧行防重复再插新行，段落风格与 000 模板一致）；`--no-info` 时同样生效（走 `update_maker_for_merge`，只动制作人行、不刷新字数）；不带 `--maker` 的 merge/epub 均保留已有制作人行
+- **epub `--maker 名字`**：书籍信息页（book_info.xhtml）在「字数」行后渲染 `<p>EPUB制作：名字</p>`；未传 `--maker` 时自动回退 000 书籍信息.txt 中的制作人行（`TXT制作`/`EPUB制作`/`制作人` 键均可，`_parse_book_info_file` 解析，须位于简介段之前）
+
+#### 修复
+
+- 制作人名称含反斜杠时，不再被正则替换字符串误解析
+- epub 打包前的书籍信息刷新流程不再误删 000 中已有的「TXT制作」行（`_upsert_maker_line` 在未指定制作人时原样保留内容）
+
 ### v0.9.1 - 2026-09-01
 
 split 拆卷新增**章节编号连续性校验**与拆分配置文件，修复正文短行被误判成章节标记的问题。

@@ -10,6 +10,21 @@
 pip install -r requirements.txt
 ```
 
+也可以按现代 Python 项目方式进行可编辑安装（适合开发与重构）：
+
+```bash
+pip install -e ".[image]"
+```
+
+安装后可使用统一命令 `pixiv-novel`。原有的 `python cli.py` 与
+`python txt_file_processing.py` 入口继续保留，现有脚本不需要立即修改：
+
+```bash
+pixiv-novel series <小说ID>
+pixiv-novel epub standardized/ 全书.epub
+pixiv-novel text split 原始.txt standardized/
+```
+
 ## 配置登录态
 
 Pixiv 的多数接口需要登录态。首次使用前：
@@ -189,6 +204,9 @@ python txt_file_processing.py merge standardized/ corrected/ 全书.txt --volume
 
 # 正文首行缩进：给正文段落加两个全角空格（章节标题/卷名/000 不缩进）
 python txt_file_processing.py merge standardized/ corrected/ 全书.txt --indent
+
+# 制作人署名：在 000 书籍信息.txt 的『字数』行后写入/更新『TXT制作：名字』行
+python txt_file_processing.py merge standardized/ corrected/ 全书.txt --maker Laffey
 ```
 
 ### format — 批量标准化
@@ -264,6 +282,12 @@ python txt_file_processing.py toc apply <章节目录或整本txt> <目录文件
 # 基础打包
 python txt_file_processing.py epub <目录1> [<目录2> ...] <输出.epub> [--cover 图片路径]
 python txt_file_processing.py epub standardized/ corrected/ 全书.epub
+```
+
+**制作人署名**（`--maker`）：书籍信息页在『字数』行后渲染 `EPUB制作：名字`；未指定时自动回退 `000 书籍信息.txt` 中的制作人行（`TXT制作`/`EPUB制作`/`制作人`）：
+
+```bash
+python txt_file_processing.py epub standardized/ corrected/ 全书.epub --maker Laffey
 ```
 
 **卷/篇支持**（`--volumes`）：JSON 列表 `[{"name": "第一卷 示例卷名", "start": 1, "end": 17}]`，每卷独立占页并作为目录的上级嵌套：

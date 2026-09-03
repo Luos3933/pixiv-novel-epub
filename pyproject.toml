@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pixiv-novel-toolkit"
+dynamic = ["version"]
+description = "Pixiv 小说下载、文本整理与 EPUB 打包工具"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28",
+    "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+image = ["Pillow>=10.0"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+pixiv-novel = "pixiv_novel_toolkit.__main__:main"
+pixiv-novel-text = "pixiv_novel_toolkit.postprocess_cli:main"
+
+[tool.setuptools]
+py-modules = ["cli", "log_setup", "pixiv_novel_scraper", "txt_file_processing"]
+
+[tool.setuptools.dynamic]
+version = {attr = "pixiv_novel_toolkit.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["pixiv_novel_toolkit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

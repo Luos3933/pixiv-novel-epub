@@ -28,10 +28,11 @@ class TxtFileMergerTests(unittest.TestCase):
             )
             output = root / "book.txt"
 
-            TxtFileMerger(
+            result = TxtFileMerger(
                 [str(baseline), str(corrected)], str(output), indent=True
             ).merge_txt_files()
 
+            self.assertEqual(result, str(output))
             text = output.read_text(encoding="utf-8")
             self.assertIn("第一章 新标题\n\n　　校正正文", text)
             self.assertNotIn("旧正文", text)

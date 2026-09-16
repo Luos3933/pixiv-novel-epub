@@ -40,7 +40,7 @@ def split_chapter_title(display_title: str) -> tuple[str | None, str]:
     if match:
         return "番外", match.group(1).strip()
     match = re.match(
-        r"^(第[0-9一二三四五六七八九十百千万零点.]+[章话回节])\s+(.+)$",
+        r"^((?:第)?[0-9一二三四五六七八九十百千万零两点.]+[章话回节])\s+(.+)$",
         display_title,
     )
     if match:

@@ -16,14 +16,43 @@ pip install -r requirements.txt
 pip install -e ".[image]"
 ```
 
-安装后可使用统一命令 `pixiv-novel`。原有的 `python cli.py` 与
-`python txt_file_processing.py` 入口继续保留，现有脚本不需要立即修改：
+### 统一命令入口
+
+安装后可使用 `pixiv-novel` 运行下载和后处理功能。推荐直接把具体功能名写在
+`pixiv-novel` 后面：
 
 ```bash
-pixiv-novel series <小说ID>
+pixiv-novel series <系列ID或网址>
+pixiv-novel split 原始.txt standardized/
 pixiv-novel epub standardized/ 全书.epub
+
+# 最快上手：下载整个系列并直接生成 TXT + EPUB
+pixiv-novel quick <系列ID或网址>
+```
+
+`text` 是一个**可选的后处理命令分组**，用于在命令外观上区分下载与文本处理；
+它不是具体处理功能，也不是必填参数。所以下面两条命令完全等价：
+
+```bash
+pixiv-novel split 原始.txt standardized/
 pixiv-novel text split 原始.txt standardized/
 ```
+
+安装时还会提供只用于后处理的快捷入口 `pixiv-novel-text`：
+
+```bash
+pixiv-novel-text split 原始.txt standardized/
+```
+
+原有脚本入口继续保留，现有使用方式不需要立即修改：
+
+```bash
+python cli.py series <系列ID或网址>
+python txt_file_processing.py split 原始.txt standardized/
+```
+
+可运行 `pixiv-novel --help` 查看统一命令清单，或运行
+`pixiv-novel <具体命令> --help` 查看参数。
 
 ## 配置登录态
 
@@ -51,6 +80,58 @@ cp pixiv_cookie.example.txt pixiv_cookie.txt         # Linux / macOS
 
 ## 快速使用
 
+### 一条命令快速成书
+
+如果暂时不需要人工调整参数，可以直接使用默认配置完成下载、标准化和成书：
+
+```bash
+python cli.py quick "pixiv.net/novel/series/<系列ID>"
+# 或安装后的统一入口
+pixiv-novel quick "pixiv.net/novel/series/<系列ID>"
+```
+
+该命令依次执行：
+
+```text
+下载正文/封面/插图 → 标准化章节 → 创建或复用 corrected/ → 合并 <书名>.txt → 打包 <书名>.epub
+```
+
+所有排版参数使用内置默认配置；封面与正文插图自动识别，EPUB 使用默认章标题、卷标题和中文正文样式。输出位于：
+
+```text
+series/series_<ID>/
+├── chapters/          # 下载原文
+├── standardized/      # 标准化章节
+├── corrected/         # 后续需要时可放人工校正版
+├── <书名>.txt
+└── <书名>.epub
+```
+
+TXT 与 EPUB 的文件名取自 `standardized/000 书籍信息.txt` 中显示的书名；文件名非法字符会自动清理，书名为空或为“未填”时回退为 `全书.txt`、`全书.epub`。
+
+默认跳过已经下载的原文章节；需要重新下载原文可加 `--force`，并发下载可加 `--workers 3`：
+
+```bash
+pixiv-novel quick "pixiv.net/novel/series/<系列ID>" --workers 3
+pixiv-novel quick "pixiv.net/novel/series/<系列ID>" --force
+```
+
+也可以在一键流程后追加成书参数。例如同时导入卷配置、署名制作人，并采用两行章标题样式：
+
+```bash
+python cli.py quick "pixiv.net/novel/series/<系列ID>" \
+  --volumes volumes.json --maker Laffey \
+  --title-style split_title --vol-style default
+```
+
+- `--volumes <JSON>`：同一份卷配置同时用于 TXT 插入卷名和 EPUB 卷页/嵌套目录。
+- `--maker <名字>`：分别写入 `TXT制作` 与 `EPUB制作`。
+- `--title-style` / `--vol-style`：选择 `epub_styles.json` 中的章标题、卷标题预设；可用 `python txt_file_processing.py epub --title-styles` 查看预设。
+- `--title-align`、`--title-color`、`--title-size`、`--title-underline`：覆盖章标题预设中的对应项目。
+- `--punct` / `--indent`：标准化时转换标点，或为合并后的 TXT 正文添加首行缩进。
+- `--cover`、`--illustrations`、`--image-quality`：显式指定封面、插图信息或图片压缩质量；不指定封面和插图文件时仍自动识别。
+- `--title` / `--author`：覆盖 EPUB 元数据；输出文件名仍取书籍信息中的书名。
+
 ### 0. 准备工作
 
 打开终端，切换到项目目录：
@@ -68,7 +149,7 @@ cd /目录/pixiv-novel-epub
 ### 2. 下载系列小说
 
 ```bash
-python cli.py series <小说ID>
+python cli.py series <系列ID或网址>
 ```
 
 下载完成后，章节正文与插图存放在 `series/series_<ID>/` 中：
@@ -77,7 +158,7 @@ python cli.py series <小说ID>
 
 ### 3. 格式化章节
 
-将下载的章节批量标准化（重命名 + 注入标题 + 段落空行；`--punct` 同时转换中文标点）。输出目录缺省时自动写入 `series/series_<ID>/standardized/`：
+将下载的章节批量标准化（重命名 + 注入标题 + 段落空行；`--punct` 同时转换中文标点）。输出目录缺省时自动写入 `series/series_<ID>/standardized/`；成功后会在标准化目录同级自动创建空的 `corrected/`，已存在时保留其中全部人工校正内容：
 
 ```bash
 python txt_file_processing.py format "series/series_<ID>" [输出目录] [--punct]
@@ -122,21 +203,25 @@ python txt_file_processing.py epub "series/series_<ID>/standardized" "series/ser
 
 | 命令 | 作用 |
 |---|---|
-| `python cli.py novel <小说ID> --chapter <编号>` | 下载单章正文到 `novels/novel_<ID>/chapters/` |
+| `python cli.py novel <小说ID或网址> --chapter <编号>` | 下载单章正文到 `novels/novel_<ID>/chapters/` |
 | `python cli.py csv [csv路径]` | 按 CSV（默认 `import_records.csv`）「编号,小说ID」逐行批量下载 |
-| `python cli.py series <系列ID>` | 整系列下载（自动分页遍历，默认跳过已存在章节） |
+| `python cli.py series <系列ID或网址>` | 整系列下载（自动分页遍历，默认跳过已存在章节） |
+| `python cli.py quick <系列ID或网址>` | 一键下载、标准化并以书名生成 TXT 与 EPUB |
 | `python cli.py retry <novel\|series> <ID>` | 按现有 `*_records.csv` 找出本地缺失章节一键补跑 |
 
 ### 常用选项
 
 ```bash
 python cli.py series 123456789                      # 下载全系列（默认跳过已存在章节）
+python cli.py series pixiv.net/novel/series/123456789 # 也可粘贴完整或省略 https:// 的系列网址
 python cli.py series 123456789 --chapters 11-21     # 只下指定章节区间
 python cli.py series 123456789 --from 30            # 从第 30 章开始（编号沿用原始章节号）
 python cli.py series 123456789 --index-only         # 只更新 CSV 索引，不下载正文
 python cli.py series 123456789 --workers 3          # 3 线程并发下载
 python cli.py series 123456789 --force              # 覆盖已存在的章节
+python cli.py quick "pixiv.net/novel/series/123456789" # 默认配置一键生成 TXT + EPUB
 python cli.py novel 123456789 --chapter 11 --force  # 强制覆盖单章
+python cli.py novel "www.pixiv.net/novel/show.php?id=123456789" --chapter 11
 python cli.py retry series 123456789                # 补跑缺失章节（支持 --force）
 python cli.py                                       # 无参数进入交互式菜单
 ```
@@ -144,6 +229,9 @@ python cli.py                                       # 无参数进入交互式�
 说明：
 
 - **断点续传**：默认跳过本地已存在的章节文件，重跑不会重复下载；`--force` 强制覆盖
+- **ID/网址兼容**：`series` 与 `novel` 的作品参数均接受纯数字、完整 `https://www.pixiv.net/...` 地址，以及省略协议的 `www.pixiv.net/...` / `pixiv.net/...` 地址；解析后统一使用纯数字 ID 建立目录和请求接口
+- **一键成书**：`quick` 接受系列 ID 或系列网址；不追加选项时使用默认标准化与 EPUB 配置，也可追加卷配置、制作人、标题样式、封面/插图等成书参数；会复用 `corrected/` 中已有人工校正版，并以书籍信息中的书名输出 TXT、EPUB（无有效书名时回退为“全书”）
+- **网址引号规则**：不含特殊字符的简单网址加不加双引号效果相同，例如 `pixiv.net/novel/series/456` 与 `"pixiv.net/novel/series/456"` 等价；建议始终使用**成对双引号**，尤其当网址包含 `&` 等查询参数时，可避免 PowerShell/CMD 把网址拆成多条命令。不要只在末尾写一个双引号（如 `pixiv.net/novel/series/456"`），未配对的引号可能在 Python 启动前就被终端拒绝
 - **下载内容**：正文 txt（`[newpage]` 转换行、插图标记替换为本地「【插图: xxx】」）+ 插图自动抓取 + **系列封面自动下载**（保存为 `series/series_<ID>/cover.jpg`，已存在则跳过）+ 三类索引（`_records.csv` / `_metadata.json` / `_summary.txt`）同步维护 + 系列 `info.txt` 与目录总表
 - **日志**：`logs/download.log`（追加写入，超 1MB 自动归档到 `logs/archive/`）
 
@@ -211,7 +299,7 @@ python txt_file_processing.py merge standardized/ corrected/ 全书.txt --maker 
 
 ### format — 批量标准化
 
-批量重命名 + 顶部注入章节标题（正文转中文数字，跳过番外）+ 段落空行；同时自动在输出目录生成 `000 书籍信息.txt`（能找到 `series_<ID>_info.txt` 则套模板填充书名/作者/连载状态/字数/简介，否则空白占位）：
+批量重命名 + 顶部注入章节标题（正文转中文数字，跳过番外）+ 段落空行；同时自动在输出目录生成 `000 书籍信息.txt`（能找到 `series_<ID>_info.txt` 则套模板填充书名/作者/连载状态/字数/简介，否则空白占位），并在输出目录同级创建 `corrected/`（若已存在则只复用，绝不清空或覆盖）：
 
 ```bash
 # 输出目录可省略，缺省输出到输入目录同级的 standardized/
@@ -253,6 +341,7 @@ python txt_file_processing.py split <原始目录或整本txt> <输出目录> [-
 | 样式 | 示例 | 说明 |
 |---|---|---|
 | 第X章/话/节/回 | `第一章：xxx`、`第11章 xxx` | 冒号/空格/粘连均识别 |
+| 中文数字+后缀 | `三十九章 xxx`、`三十九章xxx` | 无「第」字，冒号/空格/粘连均识别 |
 | 番外 | `番外`、`番外：xxx`、`番外 xxx` | 不占编号、不重排 |
 | 纯数字+后缀 | `407章 xxx` | 无「第」字 |
 | 纯数字编号 | `407：xx`、`437 xxx`、`588xxx`、`401：`（空标题） | 粘连形式靠「不含句号」判定（排除年月日/数量词起始行防误判）；空标题用「第X章」占位 |
@@ -265,6 +354,9 @@ python txt_file_processing.py split <原始目录或整本txt> <输出目录> [-
 # 导出：目录模式输出 <目录>/_toc.txt；整本 txt 模式输出 <同名>_toc.txt
 python txt_file_processing.py toc export <章节目录或整本txt> [输出文件]
 
+# 纯检查目录：按真实编号排序，重复号全部保留，缺号插入只有数字的占位行
+python txt_file_processing.py toc inspect <章节目录或整本txt> [输出文件]
+
 # 编辑 _toc.txt（每行「NNN 标题」，# 开头为注释），然后回写：
 python txt_file_processing.py toc apply <章节目录或整本txt> <目录文件>
 ```
@@ -273,6 +365,8 @@ python txt_file_processing.py toc apply <章节目录或整本txt> <目录文件
 - 整本 txt 模式 apply：按顺序替换章节标记行，首次自动生成 `.bak` 备份；目录条目数与标记数不符时中止（防错位）
 - 导出文件自动附缺口/重复编号注释（`# 缺: 145-406` 等），方便排查漏章
 - 整本 txt 模式下番外/无编号标记也会占一行（编号为顺延对照号），保证 apply 时条目数一致；目录文件本身也走编码自动探测（记事本存成 ANSI 也能正常回写）
+- `toc inspect` 是只读检查模式：默认输出 `<目录>/_toc_inspect.txt` 或 `<同名>_toc_inspect.txt`，不含说明头和统计注释；从最小真实编号排到最大编号，重复号稳定保留并在行尾标记 `【重复 1/2】`、`【重复 2/2】`，缺失号写成只有数字的占位行，标题统一为「第中文数字章 章名」。目录输入优先读取各文件首个非空标题行中的真实编号，其次读文件名标题，最后才回退文件名前缀
+- `toc inspect` 的缺号占位行不能用于 `toc apply`；无编号的番外会忽略并在日志中提示
 
 ### epub — 打包 EPUB
 

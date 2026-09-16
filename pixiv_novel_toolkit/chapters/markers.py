@@ -11,6 +11,7 @@ import re
 
 MARKER_RE = re.compile(r"^第([一二三四五六七八九十百千万零两0-9.]+)([章话节回])")
 FANWAI_RE = re.compile(r"^番外([：:\s].*)?$")
+BARE_CHINESE_SUFFIX_RE = re.compile(r"^([一二三四五六七八九十百千万零两]+)([章话节回])")
 BARE_SUFFIX_RE = re.compile(r"^(\d{1,4})([章话节回])")
 BARE_HEAD_RE = re.compile(r"^(\d{1,4})")
 
@@ -139,6 +140,24 @@ def parse_chapter_marker(
             return None
         return _marker(text, None, "fanwai", None, "", text)
 
+    match = BARE_CHINESE_SUFFIX_RE.match(text)
+    if match:
+        rest = text[match.end() :]
+        glued = bool(rest) and not rest[0].isspace() and rest[0] not in "：:、，,"
+        if "。" in text or (glued and title_len_limit and len(text) > 20):
+            return None
+        number = chinese_chapter_number_to_int(match.group(1))
+        if number is not None:
+            separator, title = _split_separator_and_title(rest)
+            return _marker(
+                text,
+                number,
+                "bare_chinese_sfx",
+                match.group(2),
+                separator,
+                title,
+            )
+
     match = BARE_SUFFIX_RE.match(text)
     if match:
         rest = text[match.end() :]
@@ -186,4 +205,3 @@ def unify_chapter_marker(marker: dict, *, num_style: str = "chinese") -> dict:
         "sep": " " if title else "",
         "title": title,
     }
-

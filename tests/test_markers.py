@@ -17,6 +17,7 @@ class ChapterMarkerTests(unittest.TestCase):
     def test_parse_supported_marker_styles(self):
         cases = {
             "第一四四章 风雪": (144, "chinese", "风雪"),
+            "三十九章风雪": (39, "bare_chinese_sfx", "风雪"),
             "第407章：暗中危机": (407, "arabic", "暗中危机"),
             "407章 暗中危机": (407, "bare_sfx", "暗中危机"),
             "588对战阿法摩": (588, "bare", "对战阿法摩"),
@@ -30,6 +31,7 @@ class ChapterMarkerTests(unittest.TestCase):
 
     def test_reject_sentence_and_quantity(self):
         self.assertIsNone(parse_chapter_marker("第三章内容是一段正文。"))
+        self.assertIsNone(parse_chapter_marker("三章内容是一段正文。"))
         self.assertIsNone(parse_chapter_marker("500万像素"))
         self.assertIsNone(parse_chapter_marker("番外 这是一段正文。"))
 
@@ -41,4 +43,3 @@ class ChapterMarkerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

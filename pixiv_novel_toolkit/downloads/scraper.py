@@ -45,6 +45,8 @@ from pixiv_novel_toolkit.downloads import (
     normalize_series_update_time,
     NovelApiError,
     parse_chapter_selection,
+    parse_pixiv_novel_id,
+    parse_pixiv_series_id,
     parse_series_overview,
     regenerate_summary,
     record_rows_to_tasks,
@@ -321,6 +323,12 @@ class PixivNovelScraper:
         下载完成后会同步更新 CSV 记录与章节摘要文件。
         若 force=False 且本地已存在同编号章节文件，则跳过下载以支持断点续传。
         """
+        try:
+            novel_id = parse_pixiv_novel_id(novel_id)
+        except ValueError as e:
+            logger.error(str(e))
+            return False
+
         output_folder = output_folder or self.build_novel_output_dir(novel_id)
         csv_file = csv_file or self.build_record_file("novel", novel_id)
         metadata_file = metadata_file or self.build_metadata_file("novel", novel_id)
@@ -499,6 +507,12 @@ class PixivNovelScraper:
             - chapter_selection 可指定单章或章节区间，例如 11 或 11-21。
         - workers 控制正文并发下载数；默认 1 串行（旧行为），>1 时启用线程池但仍按章限速以防风控。
         """
+        try:
+            series_id = parse_pixiv_series_id(series_id)
+        except ValueError as e:
+            logger.error(str(e))
+            return False
+
         logger.info(f"\nResolving Pixiv series metadata (Series ID: {series_id})...")
         output_folder = self.build_series_output_dir(series_id)
         csv_file = self.build_record_file("series", series_id)

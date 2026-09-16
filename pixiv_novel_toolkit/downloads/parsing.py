@@ -1,6 +1,59 @@
 """下载阶段可独立复用的文本与参数解析函数。"""
 
 import re
+from urllib.parse import parse_qs, urlparse
+
+
+PIXIV_HOSTS = {"pixiv.net", "www.pixiv.net"}
+
+
+def _pixiv_url(value):
+    """把完整或省略协议的 Pixiv 地址解析为 URL；非 URL 返回 ``None``。"""
+    text = str(value or "").strip().strip("'\"")
+    if not text:
+        return None
+    if re.fullmatch(r"\d+", text):
+        return None
+    if not re.match(r"^[a-z][a-z0-9+.-]*://", text, re.IGNORECASE):
+        text = "https://" + text
+    parsed = urlparse(text)
+    if (parsed.hostname or "").lower() not in PIXIV_HOSTS:
+        return None
+    return parsed
+
+
+def parse_pixiv_series_id(value):
+    """从纯数字或 Pixiv 系列网址提取系列 ID。"""
+    text = str(value or "").strip().strip("'\"")
+    if re.fullmatch(r"\d+", text):
+        return text
+    parsed = _pixiv_url(text)
+    if parsed:
+        match = re.fullmatch(r"/novel/series/(\d+)/?", parsed.path)
+        if match:
+            return match.group(1)
+    raise ValueError(
+        "请输入纯数字系列 ID，或 pixiv.net/novel/series/<ID> 系列网址。"
+    )
+
+
+def parse_pixiv_novel_id(value):
+    """从纯数字或 Pixiv 单篇小说网址提取小说 ID。"""
+    text = str(value or "").strip().strip("'\"")
+    if re.fullmatch(r"\d+", text):
+        return text
+    parsed = _pixiv_url(text)
+    if parsed:
+        if parsed.path.rstrip("/") == "/novel/show.php":
+            novel_ids = parse_qs(parsed.query).get("id") or []
+            if novel_ids and re.fullmatch(r"\d+", novel_ids[0]):
+                return novel_ids[0]
+        match = re.fullmatch(r"/novel/(\d+)/?", parsed.path)
+        if match:
+            return match.group(1)
+    raise ValueError(
+        "请输入纯数字小说 ID，或 pixiv.net/novel/show.php?id=<ID> 小说网址。"
+    )
 
 
 def clean_filename(filename):

@@ -149,7 +149,12 @@ class DownloadNovelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             scraper = FakeScraper(base_dir=temp_dir)
             scraper.chapter_delay = 0
-            self.assertTrue(scraper.download_novel("123", "001"))
+            self.assertTrue(
+                scraper.download_novel(
+                    "pixiv.net/novel/show.php?id=123",
+                    "001",
+                )
+            )
 
             work_dir = Path(scraper.build_novel_output_dir("123"))
             chapter_file = work_dir / "chapters" / "001 测试_章节.txt"

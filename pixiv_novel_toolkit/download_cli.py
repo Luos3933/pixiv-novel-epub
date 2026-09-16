@@ -3,9 +3,10 @@ Pixiv 系列下载器命令行入口。
 
 提供两种使用方式：
   1) 子命令模式：适合脚本/批处理，参数明确可复用
-     python cli.py novel <id> --chapter <num> [--force]
+     python cli.py novel <id-or-url> --chapter <num> [--force]
      python cli.py csv <path> [--force]
-     python cli.py series <id> [--from N] [--chapters 11-21] [--index-only] [--force]
+     python cli.py series <id-or-url> [--from N] [--chapters 11-21] [--index-only] [--force]
+     python cli.py quick <series-id-or-url> [--workers N] [--force] [book options]
   2) 交互模式：不带任何子命令时启动交互菜单，与旧版行为一致
      python cli.py
 
@@ -19,10 +20,29 @@ from pathlib import Path
 
 from log_setup import configure_logging
 from pixiv_novel_toolkit import __version__
+from pixiv_novel_toolkit.downloads.parsing import (
+    parse_pixiv_novel_id,
+    parse_pixiv_series_id,
+)
 from pixiv_novel_toolkit.downloads.scraper import PixivNovelScraper
+from pixiv_novel_toolkit.quick import build_series_book
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _novel_target(value):
+    try:
+        return parse_pixiv_novel_id(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _series_target(value):
+    try:
+        return parse_pixiv_series_id(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def configure_download_logging(base_dir):
@@ -66,6 +86,40 @@ def cmd_series(args, scraper):
     )
 
 
+def cmd_quick(args, scraper):
+    """完成系列下载、标准化和 TXT/EPUB 成书，并转交可选排版参数。"""
+    base_dir = getattr(scraper, "base_dir", str(PROJECT_ROOT))
+
+    def resolve_optional(path):
+        if not path or os.path.isabs(path):
+            return path
+        return os.path.join(base_dir, path)
+
+    result = build_series_book(
+        scraper,
+        args.series_id,
+        force=args.force,
+        workers=args.workers,
+        punct=args.punct,
+        volumes_file=resolve_optional(args.volumes),
+        indent=args.indent,
+        maker=args.maker,
+        title=args.title,
+        author=args.author,
+        title_style_name=args.title_style,
+        vol_style_name=args.vol_style,
+        styles_file=resolve_optional(args.title_styles_file),
+        title_align=args.title_align,
+        title_color=args.title_color,
+        title_size=args.title_size,
+        title_underline=args.title_underline,
+        cover=resolve_optional(args.cover),
+        illustrations_file=resolve_optional(args.illustrations),
+        image_quality=args.image_quality,
+    )
+    return 0 if result else 1
+
+
 def cmd_retry(args, scraper):
     """根据现有 records.csv 找出缺失章节并补跑。"""
     scraper.download_missing(args.scope, args.target_id, force=args.force)
@@ -88,9 +142,14 @@ def run_interactive(scraper):
     force = force_choice in ('y', 'yes')
 
     if choice == '1':
-        novel_id = input("\nEnter the Pixiv novel ID: ").strip()
+        novel_target = input("\nEnter the Pixiv novel ID or URL: ").strip()
         chapter_number = input("Enter the chapter index to save: ").strip()
-        if novel_id and chapter_number:
+        if novel_target and chapter_number:
+            try:
+                novel_id = parse_pixiv_novel_id(novel_target)
+            except ValueError as exc:
+                print(f"[WARN] {exc}")
+                return
             scraper.download_novel(novel_id, chapter_number, force=force)
 
     elif choice == '2':
@@ -111,9 +170,14 @@ def run_interactive(scraper):
             print("[WARN] Invalid scope or empty ID.")
 
     else:
-        series_id = input("\nEnter the Pixiv series ID: ").strip()
-        if not series_id:
-            print("[WARN] Series ID cannot be empty.")
+        series_target = input("\nEnter the Pixiv series ID or URL: ").strip()
+        if not series_target:
+            print("[WARN] Series ID or URL cannot be empty.")
+            return
+        try:
+            series_id = parse_pixiv_series_id(series_target)
+        except ValueError as exc:
+            print(f"[WARN] {exc}")
             return
         chapter_selection = input(
             "Enter chapter selection (e.g. 11 or 11-21, press Enter for all chapters): "
@@ -149,7 +213,10 @@ def build_parser():
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     p_novel = sub.add_parser("novel", help="Download a single chapter")
-    p_novel.add_argument("novel_id", help="Pixiv novel ID")
+    p_novel.add_argument(
+        "novel_id", type=_novel_target,
+        help="Pixiv novel ID or URL (with or without https://)",
+    )
     p_novel.add_argument("--chapter", required=True, help="Chapter index to save (e.g. 11)")
     p_novel.add_argument("--force", action="store_true", help="Overwrite if chapter file already exists")
     p_novel.set_defaults(func=cmd_novel)
@@ -161,7 +228,10 @@ def build_parser():
     p_csv.set_defaults(func=cmd_csv)
 
     p_series = sub.add_parser("series", help="Download or index a complete Pixiv series")
-    p_series.add_argument("series_id", help="Pixiv series ID")
+    p_series.add_argument(
+        "series_id", type=_series_target,
+        help="Pixiv series ID or URL (with or without https://)",
+    )
     p_series.add_argument("--from", dest="start", default="1",
                           help="Starting chapter number when not using --chapters (default: 1)")
     p_series.add_argument("--chapters", default=None,
@@ -172,6 +242,95 @@ def build_parser():
     p_series.add_argument("--workers", type=int, default=1,
                           help="Concurrent download workers (default: 1 = sequential; >1 enables thread pool)")
     p_series.set_defaults(func=cmd_series)
+
+    p_quick = sub.add_parser(
+        "quick",
+        help="One-click series download, standardization, TXT merge and EPUB build",
+    )
+    p_quick.add_argument(
+        "series_id", type=_series_target,
+        help="Pixiv series ID or URL (with or without https://)",
+    )
+    p_quick.add_argument(
+        "--force", action="store_true",
+        help="Overwrite existing raw chapter downloads",
+    )
+    p_quick.add_argument(
+        "--workers", type=int, default=1,
+        help="Concurrent download workers (default: 1)",
+    )
+    p_quick.add_argument(
+        "--punct", action="store_true",
+        help="Convert English punctuation while standardizing chapters",
+    )
+    p_quick.add_argument(
+        "--volumes", default=None,
+        help="Volume configuration JSON used by both TXT and EPUB",
+    )
+    p_quick.add_argument(
+        "--indent", action="store_true",
+        help="Indent TXT body paragraphs with two full-width spaces",
+    )
+    p_quick.add_argument(
+        "--maker", default=None, metavar="NAME",
+        help="Add TXT/EPUB maker credit to the book information page",
+    )
+    p_quick.add_argument(
+        "--title", default=None,
+        help="Override EPUB metadata title (output filename still follows book info)",
+    )
+    p_quick.add_argument(
+        "--author", default=None,
+        help="Override EPUB metadata author",
+    )
+    p_quick.add_argument(
+        "--title-style", default=None,
+        help="Chapter-title preset from epub_styles.json",
+    )
+    p_quick.add_argument(
+        "--vol-style", default=None,
+        help="Volume-title preset from epub_styles.json",
+    )
+    p_quick.add_argument(
+        "--title-styles-file", default=None,
+        help="Custom EPUB style preset JSON",
+    )
+    p_quick.add_argument(
+        "--title-align", choices=["center", "left"], default=None,
+        help="Override chapter-title alignment",
+    )
+    p_quick.add_argument(
+        "--title-color", default=None,
+        help="Override chapter-title CSS color",
+    )
+    p_quick.add_argument(
+        "--title-size", default=None,
+        help="Override chapter-title CSS size",
+    )
+    quick_title_line = p_quick.add_mutually_exclusive_group()
+    quick_title_line.add_argument(
+        "--title-underline", dest="title_underline",
+        action="store_true", default=None,
+        help="Underline chapter titles",
+    )
+    quick_title_line.add_argument(
+        "--no-title-underline", dest="title_underline",
+        action="store_false", default=None,
+        help="Disable chapter-title underline from a preset",
+    )
+    p_quick.add_argument(
+        "--cover", default=None,
+        help="Explicit cover image (default: auto-detect)",
+    )
+    p_quick.add_argument(
+        "--illustrations", default=None,
+        help="Explicit illustration metadata txt/JSON (default: auto-detect)",
+    )
+    p_quick.add_argument(
+        "--image-quality", type=int, default=None,
+        help="Illustration JPEG quality from 1 to 100",
+    )
+    p_quick.set_defaults(func=cmd_quick)
 
     p_retry = sub.add_parser("retry", help="Re-download missing chapters based on records.csv")
     p_retry.add_argument("scope", choices=["novel", "series"],
@@ -192,6 +351,6 @@ def main(argv=None):
     scraper = build_scraper(base_dir)
 
     if getattr(args, "command", None):
-        args.func(args, scraper)
+        return args.func(args, scraper)
     else:
-        run_interactive(scraper)
+        return run_interactive(scraper)

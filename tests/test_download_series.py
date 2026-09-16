@@ -120,7 +120,7 @@ class DownloadSeriesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             scraper = FakeScraper(base_dir=temp_dir)
             result = scraper.download_series(
-                "99",
+                "www.pixiv.net/novel/series/99",
                 only_update_csv=True,
                 chapter_selection="2-3",
             )

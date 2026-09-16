@@ -71,6 +71,57 @@ class TocManagerTests(unittest.TestCase):
             self.assertIn("100 第一百章 高点", toc_text)
             self.assertIn("005 第五章 回退但仍应预览", toc_text)
 
+    def test_file_inspect_sorts_keeps_duplicates_and_fills_missing_numbers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "book.txt"
+            output = Path(temp_dir) / "inspect.txt"
+            source.write_text(
+                "第37章 xxx\n正文\n38章\n正文\n三十九章xxx\n正文\n"
+                "39章xxx\n正文\n41章xxx\n",
+                encoding="utf-8",
+            )
+
+            result = TocManager(str(source)).inspect(str(output))
+
+            self.assertEqual(result["chapters"], 5)
+            self.assertEqual(result["missing"], 1)
+            self.assertEqual(result["duplicate_numbers"], 1)
+            self.assertEqual(
+                output.read_text(encoding="utf-8").splitlines(),
+                [
+                    "37 第三十七章 xxx",
+                    "38 第三十八章",
+                    "39 第三十九章 xxx 【重复 1/2】",
+                    "39 第三十九章 xxx 【重复 2/2】",
+                    "40",
+                    "41 第四十一章 xxx",
+                ],
+            )
+
+    def test_directory_inspect_prefers_real_number_in_first_title_line(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "001 临时顺序名.txt").write_text(
+                "第三十七章 真正标题\n正文\n", encoding="utf-8"
+            )
+            (root / "002 第三十九章 后续.txt").write_text(
+                "正文\n", encoding="utf-8"
+            )
+            output = root / "inspect.txt"
+
+            result = TocManager(str(root)).inspect(str(output))
+
+            self.assertEqual(result["chapters"], 2)
+            self.assertEqual(result["missing"], 1)
+            self.assertEqual(
+                output.read_text(encoding="utf-8").splitlines(),
+                [
+                    "37 第三十七章 真正标题",
+                    "38",
+                    "39 第三十九章 后续",
+                ],
+            )
+
     def test_file_apply_replaces_markers_and_creates_backup(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "book.txt"

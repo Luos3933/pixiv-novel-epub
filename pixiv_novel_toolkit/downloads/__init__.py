@@ -56,7 +56,14 @@ from .paths import (
     find_existing_cover,
     normalize_chapter_number,
 )
-from .parsing import clean_filename, clean_html, extract_tag_names, parse_chapter_selection
+from .parsing import (
+    clean_filename,
+    clean_html,
+    extract_tag_names,
+    parse_chapter_selection,
+    parse_pixiv_novel_id,
+    parse_pixiv_series_id,
+)
 from .series import (
     build_series_tasks,
     collect_series_page,
@@ -124,6 +131,8 @@ __all__ = [
     "novel_detail_url",
     "NovelApiError",
     "parse_chapter_selection",
+    "parse_pixiv_novel_id",
+    "parse_pixiv_series_id",
     "parse_novel_payload",
     "parse_series_overview",
     "regenerate_summary",

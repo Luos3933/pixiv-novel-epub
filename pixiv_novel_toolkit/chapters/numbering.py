@@ -32,7 +32,7 @@ def chapter_name(title):
     """去掉标准章节号前缀；仅有编号或番外标题时保留原文。"""
     stripped = title.strip()
     match = re.match(
-        r"^第[一二三四五六七八九十百千万零两0-9.]+[章话节回]\s*[：:]?\s*",
+        r"^(?:第)?[一二三四五六七八九十百千万零两0-9.]+[章话节回]\s*[：:]?\s*",
         stripped,
     )
     if match:
@@ -68,6 +68,8 @@ def renumber_segments(segments):
         suffix = marker["suffix"] or "章"
         if base_style == "chinese":
             head = f"第{chapter_number_to_chinese(new_num)}{suffix}"
+        elif base_style == "bare_chinese_sfx":
+            head = f"{chapter_number_to_chinese(new_num)}{suffix}"
         elif base_style == "arabic":
             head = f"第{new_num}{suffix}"
         elif base_style == "bare_sfx":

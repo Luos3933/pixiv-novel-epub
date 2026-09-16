@@ -80,11 +80,14 @@ def _cmd_split(args):
 
 
 def _cmd_toc(args):
-    """章节目录导出 / 回写：导出章节标题清单，人工清理后回写。"""
+    """章节目录导出、纯目录检查或标题回写。"""
     path = _resolve_path(args.path)
     if args.toc_action == 'export':
         output_file = _resolve_path(args.output_file) if args.output_file else None
         result = TocManager(path).export(output_file)
+    elif args.toc_action == 'inspect':
+        output_file = _resolve_path(args.output_file) if args.output_file else None
+        result = TocManager(path).inspect(output_file)
     else:
         toc_file = _resolve_path(args.toc_file)
         result = TocManager(path).apply(toc_file)
@@ -200,6 +203,19 @@ def _cmd_format_batch(args):
         logger.error(f" 输入目录不存在: {input_folder}")
         return 1
     BatchTxtFileFormatter(input_folder, output_folder, punct=args.punct).format_all_files()
+    corrected_folder = os.path.join(
+        os.path.dirname(os.path.abspath(output_folder)), "corrected"
+    )
+    try:
+        already_exists = os.path.isdir(corrected_folder)
+        os.makedirs(corrected_folder, exist_ok=True)
+    except OSError as exc:
+        logger.error(f"标准化已完成，但无法创建校正目录 {corrected_folder}: {exc}")
+        return 1
+    if already_exists:
+        logger.info(f"校正目录已存在，保留原有内容: {corrected_folder}")
+    else:
+        logger.info(f"已自动创建校正目录: {corrected_folder}")
     return 0
 
 
@@ -555,7 +571,7 @@ def build_arg_parser():
 
     p_toc = sub.add_parser(
         "toc",
-        help="章节目录导出/回写：导出章节标题清单，人工清理连载标注（+上架/(4爆)等）后回写"
+        help="章节目录导出/检查/回写：可清理标题，或按真实编号查看缺号与重复号"
     )
     toc_sub = p_toc.add_subparsers(dest="toc_action", required=True)
     p_toc_export = toc_sub.add_parser(
@@ -567,6 +583,17 @@ def build_arg_parser():
     p_toc_export.add_argument("output_file", nargs="?",
                               help="输出目录文件（缺省：目录模式 <目录>/_toc.txt；"
                                    "文件模式 <同名>_toc.txt）")
+    p_toc_inspect = toc_sub.add_parser(
+        "inspect",
+        help="导出纯章节检查目录：按真实编号排序、保留重复号并插入缺号占位行"
+    )
+    p_toc_inspect.add_argument("path",
+                               help="章节目录，或含章节标记的整本 txt 文件")
+    p_toc_inspect.add_argument(
+        "output_file", nargs="?",
+        help="输出文件（缺省：目录模式 <目录>/_toc_inspect.txt；"
+             "文件模式 <同名>_toc_inspect.txt）"
+    )
     p_toc_apply = toc_sub.add_parser(
         "apply",
         help="回写人工编辑后的目录（目录模式：重命名+改首行；txt 模式：替换标记行）"

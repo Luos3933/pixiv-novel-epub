@@ -6,7 +6,7 @@ import os
 import re
 import shutil
 
-from .markers import parse_chapter_marker
+from .markers import chapter_number_to_chinese, parse_chapter_marker
 from .overlay import build_prefix_index, file_prefix
 from .scanning import scan_marker_lines
 from .splitting import list_chapter_text_files, sanitize_filename_part
@@ -29,6 +29,119 @@ class TocManager:
             return self._export_file(output_file)
         logger.error(f"路径不存在（应为章节目录或整本 txt）: {self.path}")
         return None
+
+    def inspect(self, output_file=None):
+        """导出按真实编号排序、保留重复并用空编号行补齐缺口的纯目录。"""
+        if os.path.isdir(self.path):
+            entries = self._inspection_entries_from_dir()
+            mode = "dir"
+            if output_file is None:
+                output_file = os.path.join(self.path, "_toc_inspect.txt")
+        elif os.path.isfile(self.path):
+            entries = self._inspection_entries_from_file()
+            mode = "file"
+            if output_file is None:
+                base = os.path.splitext(os.path.basename(self.path))[0]
+                parent = os.path.dirname(os.path.abspath(self.path))
+                output_file = os.path.join(parent, f"{base}_toc_inspect.txt")
+        else:
+            logger.error(f"路径不存在（应为章节目录或整本 txt）: {self.path}")
+            return None
+
+        if not entries:
+            logger.error("未找到带有效编号的章节，无法生成纯章节检查目录。")
+            return None
+        return self._write_inspection(entries, output_file, mode)
+
+    def _inspection_entries_from_file(self):
+        markers = [marker for _, marker in scan_marker_lines(read_text_lines(self.path))]
+        unnumbered = sum(marker["num"] is None for marker in markers)
+        if unnumbered:
+            logger.warning(f"纯章节检查目录已忽略 {unnumbered} 个无编号标记（如番外）。")
+        return [marker for marker in markers if marker["num"] is not None]
+
+    def _inspection_entries_from_dir(self):
+        entries = []
+        unnumbered = 0
+        for filename in list_chapter_text_files(self.path):
+            prefix = file_prefix(filename)
+            stem = filename[:-4] if filename.lower().endswith(".txt") else filename
+            filename_title = re.sub(r"^\d+\s*", "", stem).strip()
+
+            # 目录中的文件名可能已被顺序编号，优先读取正文首个非空行中的真实章节号。
+            marker = None
+            for line in read_text_lines(os.path.join(self.path, filename)):
+                if line.strip():
+                    marker = parse_chapter_marker(line)
+                    break
+            marker = marker or parse_chapter_marker(filename_title)
+            if marker and marker["num"] is not None:
+                entries.append(marker)
+                continue
+            if prefix is not None:
+                entries.append({
+                    "raw": filename_title,
+                    "num": int(prefix),
+                    "style": "filename_prefix",
+                    "suffix": "章",
+                    "sep": " " if filename_title else "",
+                    "title": filename_title,
+                })
+            else:
+                unnumbered += 1
+        if unnumbered:
+            logger.warning(f"纯章节检查目录已忽略 {unnumbered} 个无编号文件。")
+        return entries
+
+    @staticmethod
+    def _inspection_title(marker):
+        number = chapter_number_to_chinese(marker["num"])
+        suffix = marker.get("suffix") or "章"
+        title = (marker.get("title") or "").strip()
+        head = f"第{number}{suffix}"
+        return f"{head} {title}" if title else head
+
+    def _write_inspection(self, entries, output_file, mode):
+        indexed = list(enumerate(entries))
+        indexed.sort(key=lambda item: (item[1]["num"], item[0]))
+        grouped = {}
+        for _, marker in indexed:
+            grouped.setdefault(marker["num"], []).append(marker)
+
+        lines = []
+        missing = 0
+        for number in range(min(grouped), max(grouped) + 1):
+            markers = grouped.get(number)
+            if not markers:
+                lines.append(str(number))
+                missing += 1
+                continue
+            duplicate_total = len(markers)
+            for duplicate_index, marker in enumerate(markers, 1):
+                line = f"{number} {self._inspection_title(marker)}"
+                if duplicate_total > 1:
+                    line += f" 【重复 {duplicate_index}/{duplicate_total}】"
+                lines.append(line)
+
+        os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
+        with open(output_file, "w", encoding="utf-8") as file:
+            file.write("\n".join(lines) + "\n")
+
+        duplicate_numbers = sum(len(markers) > 1 for markers in grouped.values())
+        duplicate_entries = sum(len(markers) - 1 for markers in grouped.values())
+        logger.info(
+            f"纯章节检查目录已导出: {len(entries)} 章 + {missing} 个缺号 -> {output_file}"
+            + (f"（{duplicate_numbers} 个编号重复，共多出 {duplicate_entries} 条）"
+               if duplicate_numbers else "")
+        )
+        return {
+            "mode": mode,
+            "chapters": len(entries),
+            "missing": missing,
+            "duplicate_numbers": duplicate_numbers,
+            "duplicate_entries": duplicate_entries,
+            "output_file": output_file,
+        }
 
     def _header(self, kind):
         return [

@@ -7,6 +7,7 @@ from pixiv_novel_toolkit.download_cli import (
     build_scraper,
     cmd_csv,
     cmd_novel,
+    cmd_quick,
     cmd_retry,
     cmd_series,
     configure_download_logging,

@@ -120,6 +120,7 @@ class TxtFileMerger:
                     output_file.write("\n\n".join(stripped_lines))
                     output_file.write("\n\n")
         logger.info(f"合并完成，输出文件为: {self.output_file}")
+        return self.output_file
 
     def add_blank_lines(self, input_file, output_file):
         with open(input_file, "r", encoding="utf-8") as source:

@@ -11,6 +11,8 @@ from pixiv_novel_toolkit.downloads.parsing import (
     clean_html,
     extract_tag_names,
     parse_chapter_selection,
+    parse_pixiv_novel_id,
+    parse_pixiv_series_id,
 )
 
 
@@ -43,6 +45,41 @@ class DownloadParsingTests(unittest.TestCase):
             ]
         }
         self.assertEqual(extract_tag_names(tags), ["冒险", "fantasy"])
+
+    def test_parse_series_id_accepts_numeric_and_urls_without_scheme(self):
+        self.assertEqual(parse_pixiv_series_id("456"), "456")
+        self.assertEqual(
+            parse_pixiv_series_id("https://www.pixiv.net/novel/series/456?lang=zh"),
+            "456",
+        )
+        self.assertEqual(
+            parse_pixiv_series_id('www.pixiv.net/novel/series/456"'),
+            "456",
+        )
+        self.assertEqual(
+            parse_pixiv_series_id("pixiv.net/novel/series/456/"),
+            "456",
+        )
+
+    def test_parse_novel_id_accepts_numeric_and_urls_without_scheme(self):
+        self.assertEqual(parse_pixiv_novel_id("123"), "123")
+        self.assertEqual(
+            parse_pixiv_novel_id("https://www.pixiv.net/novel/show.php?id=123"),
+            "123",
+        )
+        self.assertEqual(
+            parse_pixiv_novel_id("www.pixiv.net/novel/show.php?id=123"),
+            "123",
+        )
+        self.assertEqual(parse_pixiv_novel_id("pixiv.net/novel/123"), "123")
+
+    def test_pixiv_id_parser_rejects_wrong_kind_and_foreign_hosts(self):
+        with self.assertRaises(ValueError):
+            parse_pixiv_series_id("pixiv.net/novel/show.php?id=123")
+        with self.assertRaises(ValueError):
+            parse_pixiv_novel_id("pixiv.net/novel/series/456")
+        with self.assertRaises(ValueError):
+            parse_pixiv_series_id("example.com/novel/series/456")
 
 
 if __name__ == "__main__":

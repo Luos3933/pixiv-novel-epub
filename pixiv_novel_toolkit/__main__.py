@@ -24,15 +24,22 @@ ROOT_HELP = """usage: pixiv-novel <command> [options]
 Pixiv 小说下载、文本整理与 EPUB 打包工具。
 
 下载命令:
-  novel, csv, series, retry
+  novel, csv, series, retry, quick
 
 后处理命令:
   merge, format, format-single, compare, punct, diff, note,
   assemble, split, toc, epub
 
-后处理命令既可直接调用，也可加 text 分组，例如：
+后处理命令推荐直接调用，例如：
   pixiv-novel epub standardized book.epub
+
+也可在后处理命令前加可选的 text 分组：
   pixiv-novel text epub standardized book.epub
+
+注意：text 只用于标识“文本后处理”，不是具体功能，也不是必填参数。
+
+快速成书：
+  pixiv-novel quick <系列ID或网址>
 
 使用 pixiv-novel <command> --help 查看具体参数。
 """

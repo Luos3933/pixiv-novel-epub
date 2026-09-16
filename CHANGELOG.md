@@ -1,12 +1,60 @@
 # Changelog
 
+### v0.10.0 - 2026-09-16
+
+新增面向首次使用者的默认配置一键成书流程。
+
+#### 新增
+
+- **`quick <系列ID或网址>`**：一条命令依次完成整个 Pixiv 系列的正文/封面/插图下载、章节标准化、`corrected/` 准备、全书 TXT 合并和 EPUB 打包；统一入口与旧入口均可使用：`pixiv-novel quick ...` / `python cli.py quick ...`
+- 输出固定放在 `series/series_<ID>/`：原文 `chapters/`、标准化 `standardized/`、人工校正 `corrected/`，TXT/EPUB 文件名取 `000 书籍信息.txt` 中的书名（非法字符自动清理，无有效书名时回退“全书”）
+- EPUB 使用内置默认章标题/卷标题/中文正文样式，自动发现下载器保存的封面和插图库；重跑时保留并优先使用 `corrected/` 中已有人工校正版
+- 支持 `--workers N` 并发下载与 `--force` 强制刷新原始章节；任一关键阶段失败时中止后续阶段，避免继续生成新的不完整产物
+- `quick` 可追加 `--volumes`、`--maker`、`--indent`、`--punct`，以及章/卷标题预设与覆盖项、EPUB 元数据、封面、插图信息和图片质量参数；卷配置与制作人会同时作用于 TXT 和 EPUB
+
+#### 重构
+
+- 新增 `pixiv_novel_toolkit/quick.py` 作为跨下载、后处理和 EPUB 的轻量编排层；`TxtFileMerger.merge_txt_files()` 成功时返回输出路径，便于流水线可靠判断阶段结果
+
+#### 验证
+
+- 新增一键成书端到端测试，实际验证标准化目录、校正目录、TXT、EPUB、EPUB 章节文件结构及卷页/制作人/样式参数；新增下载失败立即中止测试
+
+### v0.9.5 - 2026-09-16
+
+下载命令新增 Pixiv 网址输入，并让标准化流程自动准备人工校正目录。
+
+#### 新增
+
+- **系列 ID/网址输入**：`series` 既接受纯数字 ID，也接受完整 `https://www.pixiv.net/novel/series/<ID>`、省略协议的 `www.pixiv.net/novel/series/<ID>` 与 `pixiv.net/novel/series/<ID>`；兼容末尾斜杠、查询参数、锚点及误带的首尾引号
+- **单篇小说 ID/网址输入**：`novel` 同样接受纯数字 ID、完整或省略协议的 `pixiv.net/novel/show.php?id=<ID>`，并兼容 `/novel/<ID>`；命令行、交互菜单及 `PixivNovelScraper` 公开下载方法统一归一化为纯数字 ID 后再建立目录和请求 API
+- **自动创建校正目录**：`format` 成功后在标准化输出目录同级自动创建 `corrected/`；目录已存在时只复用并保留全部人工校正文件，不清空、不覆盖
+
+#### 验证
+
+- 新增 URL 解析、错误类型/外域拒绝、CLI 参数归一化、单篇/系列公开入口和 `corrected/` 内容保留测试
+
+### v0.9.4 - 2026-09-08
+
+新增按原始真实章节号生成纯检查目录的 `toc inspect`，用于直观看出缺章与重复编号。
+
+#### 新增
+
+- **`toc inspect <章节目录或整本txt> [输出文件]`**：按真实章节编号升序输出，重复编号全部保留且维持原出现顺序，并在行尾按 `【重复 1/2】`、`【重复 2/2】` 标记；从最小到最大编号之间的缺失章节写成只有数字的占位行；现有章节标题统一为「第中文数字章 章名」。默认输出为目录下 `_toc_inspect.txt` 或整本 TXT 同级的 `<同名>_toc_inspect.txt`
+- 目录检查优先使用章节文件首个非空标题行中的真实编号，其次解析文件名标题，最后回退文件名前缀；无编号番外不混入编号检查目录并给出日志提示
+- 章节标记新增无「第」字中文数字格式，如 `三十九章 xxx` / `三十九章xxx`；同步兼容拆分重编号、`--name-only` 标题清理及 EPUB 两行标题解析
+
+#### 安全性
+
+- `toc inspect` 输出是不可回写的纯检查清单，不改变现有 `toc export/apply` 语义，避免缺号占位行导致整本 TXT 回写错位
+
 ### v0.9.3 - 2026-09-03
 
 完成项目结构模块化重构，引入标准 Python 包、统一命令入口和系统化回归测试，同时保留原有脚本及导入方式的兼容性。
 
 #### 重构
 
-- **项目结构第一阶段重构**：新增 `pyproject.toml`、`pixiv_novel_toolkit/` 正式包和统一 `pixiv-novel` 命令；下载 argparse/交互菜单迁入 `pixiv_novel_toolkit/download_cli.py`，后处理 argparse、命令处理器与根目录相对路径解析迁入 `postprocess_cli.py`，统一入口不再反向导入旧脚本；`pixiv-novel-text` 包安装入口改指向新模块；`cli.py` / `txt_file_processing.py` 收敛为兼容门面，原命令、项目根目录配置位置和旧导入方式继续可用
+- **项目结构第一阶段重构**：新增 `pyproject.toml`、`pixiv_novel_toolkit/` 正式包和统一 `pixiv-novel` 命令；下载 argparse/交互菜单迁入 `pixiv_novel_toolkit/download_cli.py`，后处理 argparse、命令处理器与根目录相对路径解析迁入 `postprocess_cli.py`，统一入口不再反向导入旧脚本；后处理命令既可直接写成 `pixiv-novel split ...`，也可通过可选分组写成 `pixiv-novel text split ...`（`text` 仅用于分组，不是必填命令）；`pixiv-novel-text` 包安装入口改指向新模块；`cli.py` / `txt_file_processing.py` 收敛为兼容门面，原命令、项目根目录配置位置和旧导入方式继续可用
 - **下载器模块化**：全部 Pixiv API 地址移入 `pixiv_novel_toolkit/downloads/endpoints.py`；默认超时/重试/限速常量、独立请求头构建和 Cookie 文件读取移入 `downloads/config.py`；输出目录、索引文件和旧插图库兼容规则移入 `downloads/paths.py`；HTTP 重试、JSON 解码和图片流式写入移入 `downloads/http.py`；小说响应、封面回退链、封面落盘与两类正文插图本地化移入 `downloads/novel.py`，单章请求→插图→正文落盘及结构化结果移入 `downloads/novel_flow.py`；文件名/简介/标签/章节范围解析移入 `downloads/parsing.py`；CSV 章节记录、metadata 真值源、summary 派生和系列目录移入 `downloads/indexes.py`；系列分页结构、总览/分页元数据回退、info 文本渲染、游标和任务编号移入 `downloads/series.py`；系列总览/完整分页抓取及串行/并发/index-only 执行移入 `downloads/series_flow.py`；CSV 任务标准化、批量成功数统计、缺章扫描和重试后复检移入 `downloads/batch.py`；完整 `PixivNovelScraper` 实现迁入 `downloads/scraper.py`，`cli.py` 直接使用新实现，旧 `pixiv_novel_scraper.py` 仅保留辅助函数重导出及 `requests.get` 历史补丁兼容子类；旧函数、路径方法、可变配置属性及子类覆盖点继续兼容
 - **共享章节核心**：章节标记解析、多目录覆盖规则与卷配置读取提取到 `pixiv_novel_toolkit/chapters/`；标记位置扫描及带回退阈值/同号重发豁免的章节分段提取到 `chapters/scanning.py`，split 与 toc 复用对应扫描接口；章节重编号、标题清理、冲突顺延、缺口描述与 `_编号统计.txt` 渲染提取到 `chapters/numbering.py`；拆卷输入发现/文件排序、卷名推导、文件名清理、疑似标记扫描、卷范围重叠及 `volumes.json` 写入提取到 `chapters/splitting.py`，`split_config.json` 默认值/模板/校验迁入 `chapters/split_config.py`，拆卷总流程迁入 `chapters/splitter.py`；目录/整本 TXT 的 TOC 导出、缺口提示、标题回写和 `.bak` 保护迁移到 `chapters/toc.py`；旧 `VolumeSplitter`/`TocManager` 及 `_load_split_config` 导入方式保持兼容
 - **基础与 EPUB 模块化**：外来文本编码探测/读取移入 `pixiv_novel_toolkit/common/textio.py`；EPUB 模板、默认样式、样式预设、标题 HTML/CSS、OPF/NCX/Nav、插图信息解析及 spine 规划移入 `pixiv_novel_toolkit/epub/`，最终收集章节、封面/插图嵌入、元数据刷新与 ZIP 打包编排迁入 `epub/builder.py`；旧 `EpubBuilder` 导入路径、类属性/方法继续兼容，默认样式文件仍定位项目根目录 `epub_styles.json`

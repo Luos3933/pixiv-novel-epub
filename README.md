@@ -4,6 +4,18 @@
 
 > 约定：命令中的 `<内容>` 为必填项，`[内容]` 为选填项。
 
+## 最近更新
+
+当前版本：**v0.10.0（2026-09-16）**
+
+- 新增 `quick` 一键成书：输入 Pixiv 系列 ID 或网址，自动完成下载、标准化、TXT 合并和 EPUB 打包，并以书籍信息中的书名命名成书文件。
+- `quick` 支持卷配置、制作人、TXT 缩进、标点转换、章/卷标题样式、封面、插图和图片质量等可选参数。
+- `series` / `novel` 支持完整 Pixiv 网址及省略 `https://` 的网址，不再只能输入纯数字 ID。
+- 新增 `toc inspect` 纯章节目录检查，可保留重复章节、标记重复次数并插入缺号占位行。
+- 标准化完成后自动创建或复用 `corrected/`，方便直接开始人工校正。
+
+完整版本记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 依赖
 
 ```bash
@@ -15,44 +27,6 @@ pip install -r requirements.txt
 ```bash
 pip install -e ".[image]"
 ```
-
-### 统一命令入口
-
-安装后可使用 `pixiv-novel` 运行下载和后处理功能。推荐直接把具体功能名写在
-`pixiv-novel` 后面：
-
-```bash
-pixiv-novel series <系列ID或网址>
-pixiv-novel split 原始.txt standardized/
-pixiv-novel epub standardized/ 全书.epub
-
-# 最快上手：下载整个系列并直接生成 TXT + EPUB
-pixiv-novel quick <系列ID或网址>
-```
-
-`text` 是一个**可选的后处理命令分组**，用于在命令外观上区分下载与文本处理；
-它不是具体处理功能，也不是必填参数。所以下面两条命令完全等价：
-
-```bash
-pixiv-novel split 原始.txt standardized/
-pixiv-novel text split 原始.txt standardized/
-```
-
-安装时还会提供只用于后处理的快捷入口 `pixiv-novel-text`：
-
-```bash
-pixiv-novel-text split 原始.txt standardized/
-```
-
-原有脚本入口继续保留，现有使用方式不需要立即修改：
-
-```bash
-python cli.py series <系列ID或网址>
-python txt_file_processing.py split 原始.txt standardized/
-```
-
-可运行 `pixiv-novel --help` 查看统一命令清单，或运行
-`pixiv-novel <具体命令> --help` 查看参数。
 
 ## 配置登录态
 
@@ -132,6 +106,49 @@ python cli.py quick "pixiv.net/novel/series/<系列ID>" \
 - `--cover`、`--illustrations`、`--image-quality`：显式指定封面、插图信息或图片压缩质量；不指定封面和插图文件时仍自动识别。
 - `--title` / `--author`：覆盖 EPUB 元数据；输出文件名仍取书籍信息中的书名。
 
+## 统一命令入口
+
+前面的 `quick` 示例同时保留了旧脚本入口和统一入口两种写法。执行依赖章节中的
+`pip install -e ".[image]"` 后，下载与后处理功能都可以统一写成
+`pixiv-novel <具体命令>`，不必再区分 `cli.py` 和 `txt_file_processing.py`：
+
+```bash
+pixiv-novel series <系列ID或网址>
+pixiv-novel split 原始.txt standardized/
+pixiv-novel epub standardized/ 全书.epub
+
+# 最快上手：下载整个系列并直接生成 TXT + EPUB
+pixiv-novel quick <系列ID或网址>
+```
+
+`text` 是一个**可选的后处理命令分组**，用于在命令外观上区分下载与文本处理；
+它不是具体处理功能，也不是必填参数。所以下面两条命令完全等价：
+
+```bash
+pixiv-novel split 原始.txt standardized/
+pixiv-novel text split 原始.txt standardized/
+```
+
+安装时还会提供只用于后处理的快捷入口 `pixiv-novel-text`：
+
+```bash
+pixiv-novel-text split 原始.txt standardized/
+```
+
+原有脚本入口继续保留，现有使用方式不需要立即修改：
+
+```bash
+python cli.py series <系列ID或网址>
+python txt_file_processing.py split 原始.txt standardized/
+```
+
+可运行 `pixiv-novel --help` 查看统一命令清单，或运行
+`pixiv-novel <具体命令> --help` 查看参数。
+
+## 基础使用
+
+以下流程展示不使用 `quick` 时，如何逐步完成下载、标准化、人工校正和成书。
+
 ### 0. 准备工作
 
 打开终端，切换到项目目录：
@@ -195,6 +212,7 @@ python txt_file_processing.py epub "series/series_<ID>/standardized" "series/ser
 最终成书效果：
 
 ![最终 EPUB 阅读效果](/docs/images/Snipaste_2026-08-13_20-26-04.png)
+
 ## 下载：cli.py（唯一命令行入口）
 
 `cli.py` 是下载的唯一入口（`pixiv_novel_scraper.py` 直接运行会委托给它）；不带任何参数时进入交互式菜单。

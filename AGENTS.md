@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Pixiv 小说下载与自动整理工具包。下载 Pixiv 小说正文及插图，自动维护章节索引与元数据；下载后通过三层流水线（原始 → 标准化 → 校正）完成成书整理。
+Pixiv 小说下载与自动整理工具包。下载 Pixiv 小说正文及插图，自动维护章节索引与元数据；下载后通过流水线（原始 → 清洗 → 人工复核 → 标准化 → 最终校正）完成成书整理。
 
 ## 快速命令
 
@@ -20,7 +20,9 @@ python cli.py novel <小说ID或网址> --chapter <编号> --force
 python cli.py quick <系列ID或网址> [--workers 3] [--force] [--volumes volumes.json] [--maker 名字] [--title-style 预设] [--vol-style 预设]
 
 # 后处理（txt_file_processing.py）
-python txt_file_processing.py format <章节目录> [输出目录] --punct  # 标准化：重命名+注入标题+标点转换+生成 000 书籍信息.txt（输出目录缺省时用同级 standardized/）
+python txt_file_processing.py clean <章节目录或整本txt> [输出目录]       # 按 text_processing.json 清洗到同级 cleaned/，原文不动；--dry-run 仅报告
+python txt_file_processing.py audit <章节目录或整本txt> [报告目录]       # 只读质量检查，默认向同级 reports/ 输出 txt+JSON 报告
+python txt_file_processing.py format <章节目录> [输出目录] [--reviewed-dir <人工复核目录>] --punct  # 同级 reviewed/ 或显式复核目录按编号优先，再标准化
 python txt_file_processing.py merge <标准化目录> <校正目录> <输出txt> # 多目录合并，校正优先，--info 刷新字数（默认开），--volumes 卷名插入，--indent 正文首行缩进（两全角空格，标题/卷名/000 不缩进），--maker 制作人署名（000 的『字数』行后写/更新『TXT制作：名字』行，--no-info 时同样生效）
 python txt_file_processing.py diff <标准化> <校正> [报告.txt]         # 目录级对比
 python txt_file_processing.py note add <校正目录> <编号> --msg "..."  # 修订说明
@@ -39,25 +41,32 @@ python txt_file_processing.py epub <目录1> [<目录2> ...] <输出.epub>  # �
 | 文件 | 职责 |
 |---|---|
 | `pyproject.toml` | 项目元数据、依赖、可选依赖、命令入口及测试/代码检查工具配置 |
-| `pixiv_novel_toolkit/` | 渐进式重构后的正式包；`__main__.py` 提供下载/后处理统一分发，`download_cli.py` / `postprocess_cli.py` 分别承载下载与后处理 argparse/命令处理器，`quick.py` 编排默认配置的一键下载→标准化→TXT/EPUB 成书流程；`downloads/` 承载 `PixivNovelScraper` 正式实现、Pixiv 端点、默认配置/Cookie/请求头、输出路径、HTTP 重试/流式写入、单章请求/正文/媒体与系列封面、系列元数据及分页聚合、串行/并发执行、CSV 批量与缺章重试任务及 CSV/JSON 索引；`chapters/` 承载标记解析/位置扫描、连续性校验分段、重编号/编号报告、拆卷配置/输入/编排与诊断、TOC 导出回写、多目录覆盖和卷配置；`common/textio.py` 负责编码读取；`postprocess/` 统一书籍信息解析/生成/刷新、段落与标点格式化、多目录合并、单文件/目录差异、人工修订记录与标准化/校正目录合成；`epub/` 承载构建器、模板、样式、导航/manifest、插图解析与 spine 规划 |
+| `pixiv_novel_toolkit/` | 渐进式重构后的正式包；`__main__.py` 提供下载/后处理统一分发，`download_cli.py` / `postprocess_cli.py` 分别承载下载与后处理 argparse/命令处理器，`quick.py` 编排默认配置的一键下载→标准化→TXT/EPUB 成书流程；`downloads/` 承载 `PixivNovelScraper` 正式实现、Pixiv 端点、默认配置/Cookie/请求头、输出路径、HTTP 重试/流式写入、单章请求/正文/媒体与系列封面、系列元数据及分页聚合、串行/并发执行、CSV 批量与缺章重试任务及 CSV/JSON 索引；`chapters/` 承载标记解析/位置扫描、连续性校验分段、重编号/编号报告、拆卷配置/输入/编排与诊断、TOC 导出回写、多目录覆盖和卷配置；`common/textio.py` 负责编码读取；`postprocess/` 统一文本清洗/质量检查配置与报告、书籍信息解析/生成/刷新、段落与标点格式化、多目录合并、单文件/目录差异、人工修订记录与标准化/校正目录合成；`epub/` 承载构建器、模板、样式、导航/manifest、插图解析与 spine 规划 |
 | `pixiv_novel_scraper.py` | 下载兼容门面：重导出原模块级辅助函数；`PixivNovelScraper` 继承包内正式实现，并仅覆盖网络请求方法以保留 `pixiv_novel_scraper.requests.get` 历史补丁点；直接运行仍委托 `cli.py` |
 | `cli.py` | 下载 CLI 兼容门面：重导出 `download_cli.py` 的 novel/csv/series/retry、交互菜单和主函数；直接运行方式不变 |
-| `txt_file_processing.py` | 后处理兼容门面：重导出旧类、常量、辅助函数及 `postprocess_cli.py` 的 11 个子命令；直接运行旧脚本仍可用，相对路径仍以项目根目录解析 |
+| `txt_file_processing.py` | 后处理兼容门面：重导出旧类、常量、辅助函数及 `postprocess_cli.py` 子命令；直接运行旧脚本仍可用，相对路径仍以项目根目录解析 |
 | `log_setup.py` | 共享日志配置：固定文件名追加 + 超阈值归档到 logs/archive/ |
 | `tests/` | 下载解析/索引、章节标记、多目录覆盖、CLI 注册与 EPUB 结构的回归测试（兼容 unittest/pytest） |
 | `pixiv_cookie.txt` | 登录 Cookie（已 gitignore，不提交） |
 
-## 三层流水线工作流
+## 清洗—标准化流水线工作流
 
 ```
 series/series_<ID>/
 ├── chapters/          # ① 下载原始（不动）
-├── standardized/      # ② format --punct 输出（含自动生成的 000 书籍信息.txt）
-├── corrected/         # ③ 人工校正（只放改过的文件 + _revisions.json）
-└── final/             # ④ assemble 输出（可选）
+├── cleaned/           # ② clean 输出（不修改原文）
+├── reports/           # clean / audit 报告（txt + JSON）
+├── reviewed/          # ③ 格式化前人工复核（只放相对 cleaned 改过的文件）
+├── standardized/      # ④ format --punct 输出（含自动生成的 000 书籍信息.txt）
+├── corrected/         # ⑤ 最终人工校正（只放改过的文件 + _revisions.json）
+└── final/             # ⑥ assemble 输出（可选）
 ```
 
-- `format` 自动生成 `000 书籍信息.txt`：有 `series_<ID>_info.txt` 则套模板填充，否则空白占位；完成后在输出目录同级自动创建 `corrected/`，已存在时保留全部内容
+- `clean` / `audit` 共用项目根目录 `text_processing.json`：每条规则有独立 `enabled` 与阈值；`clean` 默认输出输入同级 `cleaned/` 且永不原地覆盖，`--dry-run` 只写报告。默认删除明确以 `PS` / `P.S.` / `作者的话` 开头且命中求票/收藏关键词的作者附言，并继续删除有限数量、命中推荐新书/求票/收藏信号的续段，遇正常正文停止。两项依赖原始空行结构的修改默认关闭：`remove_blank_separated_author_notes` 识别每章最后至少 2 个连续空行后的顶格作者说明，保留两个全角空格开头的中文正文；启用时同时删除尾块中的 `【插图: 文件名】` 或 Pixiv 原始 `[uploadedimage:数字]` 文本标记但不删除实际图片，后续 EPUB 按插图信息与文件名章节号还原。`replace_scene_break_blank_lines` 把正文连续空行替换为独立 `……` 段，相邻已有独立省略号时不重复插入。无论开关是否启用，clean 都分别生成 `blank_author_notes_report.txt/json` 和 `scene_breaks_report.txt/json` 候选报告，前者列出随附插图标记，后者按默认配置显示前后各 2 段。`audit` 只读并写 `reports/audit_report.*`，`--format txt|json|both` 控制格式；目录模式只检查数字前缀章节，无数字前缀的整本 TXT 会跳过并记入报告，单文件模式仍可检查整本。相对输出目录配置以输入父目录为基准；普通硬回车合并默认关闭，引号计数、疑似缺标点等歧义问题只报告不自动修改；带少量坏字节的 UTF-8/GB18030/Big5 会容错读取并以替换符标记，clean/audit 报告同步列出解码异常。
+- `clean` 正常完成后自动创建同级 `reviewed/`，已有内容不覆盖；`--dry-run` 不创建。`clean` 依赖规则匹配，可能漏判或误判，输出必须结合报告人工复核，不能直接视为最终稿。
+- 推荐手工流水线为 `audit chapters/` → 调整配置 → `clean chapters/` → `audit cleaned/` → 把人工改过的章节放入 `reviewed/` → `format cleaned/`。format 自动使用同级 reviewed/ 的同编号版本，也支持 `--reviewed-dir` 显式指定；未运行 clean 时可自行创建任意复核目录并传入。`quick` 为保持兼容仍沿用直接下载→标准化→成书的默认流程，不自动启用 clean。
+- 外来整本 TXT 若需利用连续空行识别作者附言，必须先 `audit/clean` 整本文件再 `split`；`split` 的 `_write_chapter` 会 `strip` 每行、丢弃全部原始空行并通过 `interleave_blank_lines` 统一为每个非空段落后一个空行，因此拆分后原始连续空行数量不可恢复。`split` 同时注入章节标题并输出 UTF-8，`--punct` 才执行标点转换；它属于格式化写出，但不等同于完整 `format` 流程。
+- `format` 自动叠加输入目录同级 `reviewed/`，也可用 `--reviewed-dir` 指定其他目录，同数字前缀人工文件优先；之后生成 `000 书籍信息.txt`，有 `series_<ID>_info.txt` 则套模板填充，否则空白占位；完成后在输出目录同级自动创建 `corrected/`，已存在时保留全部内容
 - `series` / `novel` 的作品参数支持纯数字 ID、完整 Pixiv URL，以及省略协议的 `www.pixiv.net/...` / `pixiv.net/...`；系列地址识别 `/novel/series/<ID>`，单篇地址识别 `/novel/show.php?id=<ID>`（兼容 `/novel/<ID>`）
 - `quick` 只面向完整系列：无附加参数时使用下载、标准化、合并和 EPUB 的默认配置，也可透传 `--volumes/--maker/--indent/--punct` 以及 EPUB 标题样式、元数据、封面、插图与图片质量参数；依次输出 `standardized/`、`corrected/`、`<书名>.txt`、`<书名>.epub`；书名取 `000 书籍信息.txt`（非法字符自动清理，无有效书名时回退“全书”），封面/插图自动识别，已有 corrected 校正版按后列目录优先规则参与重建
 - `merge` 多目录时**后列的目录优先**（`merge standardized/ corrected/ out.txt`），按文件名开头数字前缀配对

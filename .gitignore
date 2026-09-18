@@ -4,6 +4,7 @@ pixiv_cookie.txt
 # 下载产物（章节/插图/索引/成书——可能含付费或 R-18 内容，绝不提交）
 novels/
 series/
+test_files/
 .workbuddy/
 import_records.csv
 *.epub

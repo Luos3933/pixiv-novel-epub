@@ -56,6 +56,23 @@ class FormattingTests(unittest.TestCase):
             self.assertIn("正文？", third.read_text(encoding="utf-8"))
             self.assertTrue((output / "000 书籍信息.txt").exists())
 
+    def test_batch_punctuation_keeps_quote_state_across_lines(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "chapters"
+            output = root / "standardized"
+            source.mkdir()
+            (source / "001 对话.txt").write_text(
+                '他说:"第一行\n第二行"',
+                encoding="utf-8",
+            )
+
+            BatchTxtFileFormatter(str(source), str(output), punct=True).format_all_files()
+
+            content = (output / "001 第一章 对话.txt").read_text(encoding="utf-8")
+            self.assertIn("他说:“第一行", content)
+            self.assertIn("第二行”", content)
+
     def test_format_command_creates_corrected_sibling_and_preserves_contents(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -83,6 +100,70 @@ class FormattingTests(unittest.TestCase):
             ))
             self.assertEqual(second_result, 0)
             self.assertEqual(keep.read_text(encoding="utf-8"), "保留")
+
+    def test_format_command_uses_reviewed_sibling_as_prefix_overlay(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cleaned = root / "cleaned"
+            reviewed = root / "reviewed"
+            output = root / "standardized"
+            cleaned.mkdir()
+            reviewed.mkdir()
+            (cleaned / "001 原标题.txt").write_text("机器清洗版", encoding="utf-8")
+            (cleaned / "002 继续.txt").write_text("未人工修改", encoding="utf-8")
+            (reviewed / "001 人工标题.txt").write_text("人工复核版", encoding="utf-8")
+
+            result = _cmd_format_batch(SimpleNamespace(
+                input_folder=str(cleaned),
+                output_folder=str(output),
+                punct=False,
+            ))
+
+            self.assertEqual(result, 0)
+            first = output / "001 第一章 人工标题.txt"
+            second = output / "002 第二章 继续.txt"
+            self.assertTrue(first.is_file())
+            self.assertIn("人工复核版", first.read_text(encoding="utf-8"))
+            self.assertNotIn("机器清洗版", first.read_text(encoding="utf-8"))
+            self.assertTrue(second.is_file())
+
+    def test_format_command_accepts_explicit_reviewed_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chapters = root / "chapters"
+            manual = root / "manual_before_format"
+            output = root / "standardized"
+            chapters.mkdir()
+            manual.mkdir()
+            (chapters / "001 原标题.txt").write_text("原始版", encoding="utf-8")
+            (manual / "001 人工标题.txt").write_text("人工版", encoding="utf-8")
+
+            result = _cmd_format_batch(SimpleNamespace(
+                input_folder=str(chapters),
+                output_folder=str(output),
+                reviewed_dir=str(manual),
+                punct=False,
+            ))
+
+            self.assertEqual(result, 0)
+            formatted = output / "001 第一章 人工标题.txt"
+            self.assertIn("人工版", formatted.read_text(encoding="utf-8"))
+
+    def test_format_command_rejects_missing_explicit_reviewed_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chapters = root / "chapters"
+            chapters.mkdir()
+            (chapters / "001 标题.txt").write_text("正文", encoding="utf-8")
+
+            result = _cmd_format_batch(SimpleNamespace(
+                input_folder=str(chapters),
+                output_folder=str(root / "standardized"),
+                reviewed_dir=str(root / "missing"),
+                punct=False,
+            ))
+
+            self.assertEqual(result, 1)
 
 
 if __name__ == "__main__":

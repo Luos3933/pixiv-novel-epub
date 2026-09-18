@@ -7,6 +7,8 @@ import sys
 
 POSTPROCESS_COMMANDS = frozenset({
     "merge",
+    "clean",
+    "audit",
     "format",
     "format-single",
     "compare",
@@ -27,10 +29,13 @@ Pixiv 小说下载、文本整理与 EPUB 打包工具。
   novel, csv, series, retry, quick
 
 后处理命令:
-  merge, format, format-single, compare, punct, diff, note,
+  clean, audit, merge, format, format-single, compare, punct, diff, note,
   assemble, split, toc, epub
 
 后处理命令推荐直接调用，例如：
+  pixiv-novel clean chapters
+  pixiv-novel audit cleaned
+  pixiv-novel format cleaned
   pixiv-novel epub standardized book.epub
 
 也可在后处理命令前加可选的 text 分组：

@@ -5,6 +5,7 @@ import os
 import re
 
 from pixiv_novel_toolkit.chapters.markers import chapter_number_to_chinese
+from pixiv_novel_toolkit.chapters.overlay import collect_text_overlay
 from .book_info_generator import BookInfoGenerator
 
 
@@ -55,10 +56,17 @@ def convert_punctuation(text):
 class BatchTxtFileFormatter:
     """批量规范章节文件名、段落空行、标题行与可选中文标点。"""
 
-    def __init__(self, input_folder, output_folder, punct=False):
+    def __init__(
+        self,
+        input_folder,
+        output_folder,
+        punct=False,
+        overlay_folders=None,
+    ):
         self.input_folder = input_folder
         self.output_folder = output_folder
         self.punct = punct
+        self.overlay_folders = list(overlay_folders or [])
 
     def _number_to_chinese(self, number):
         return chapter_number_to_chinese(number)
@@ -66,23 +74,27 @@ class BatchTxtFileFormatter:
     def format_all_files(self):
         if not os.path.exists(self.output_folder):
             os.makedirs(self.output_folder)
-        files = [
-            filename
-            for filename in os.listdir(self.input_folder)
-            if filename.endswith(".txt") and not filename.startswith("_")
-        ]
+        input_folders = [self.input_folder, *self.overlay_folders]
+        collected = collect_text_overlay(input_folders, warn_missing=logger.warning)
+        files = list(collected.values())
 
-        def sort_key(filename):
+        def sort_key(entry):
+            filename = entry[0]
             match = re.search(r"^(\d+)", filename)
             return int(match.group(1)) if match else 0
 
         text_files = sorted(files, key=sort_key)
-        logger.info(f"批量格式化开始：{self.input_folder} -> {self.output_folder}")
+        source_summary = " + ".join(input_folders)
+        logger.info(f"批量格式化开始：{source_summary} -> {self.output_folder}")
+        if self.overlay_folders:
+            logger.info(
+                "人工复核覆盖已启用：后列 reviewed 目录中的同编号文件优先"
+            )
         logger.info(f"共发现 {len(text_files)} 个 txt 文件；punct={self.punct}")
 
         main_chapter_count = 1
         stats_main = stats_extra = stats_skipped = stats_unpaired = 0
-        for index, text_file in enumerate(text_files, start=1):
+        for index, (text_file, input_path) in enumerate(text_files, start=1):
             match = re.search(r"^(\d+)\s+(.*?)(?:\.txt)$", text_file)
             if not match:
                 logger.warning(f"[{index:03d}] 跳过不符合命名规则的文件: {text_file}")
@@ -113,35 +125,26 @@ class BatchTxtFileFormatter:
                 main_chapter_count += 1
                 stats_main += 1
             new_filename = f"{prefix} {display_title}.txt"
-            input_path = os.path.join(self.input_folder, text_file)
             output_path = os.path.join(self.output_folder, new_filename)
             with open(input_path, "r", encoding="utf-8") as input_file:
                 new_lines = interleave_blank_lines(input_file.readlines())
 
             punctuation_stats = None
             if self.punct:
-                converted = []
-                front = back = exclamation = question = unpaired = 0
-                for line in new_lines:
-                    new_line, stats = convert_punctuation(line)
-                    converted.append(new_line)
-                    front += stats["front_quote"]
-                    back += stats["back_quote"]
-                    exclamation += stats["original_exclamation"]
-                    question += stats["original_question"]
-                    unpaired += stats["unpaired"]
-                new_lines = converted
+                converted, stats = convert_punctuation("\n".join(new_lines))
+                new_lines = converted.split("\n")
                 punctuation_stats = {
-                    "front": front,
-                    "back": back,
-                    "excl": exclamation,
-                    "ques": question,
-                    "unpaired": unpaired,
+                    "front": stats["front_quote"],
+                    "back": stats["back_quote"],
+                    "excl": stats["original_exclamation"],
+                    "ques": stats["original_question"],
+                    "unpaired": stats["unpaired"],
                 }
-                if unpaired:
+                if stats["unpaired"]:
                     logger.warning(
                         f"[{index:03d}] {text_file}: 奇数个英文双引号 "
-                        f"({front} “ + {back} ”)，前/后引号可能未完整配对。"
+                        f"({stats['front_quote']} “ + {stats['back_quote']} ”)，"
+                        "前/后引号可能未完整配对。"
                     )
                     stats_unpaired += 1
 

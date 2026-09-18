@@ -98,6 +98,12 @@ from pixiv_novel_toolkit.postprocess.book_info import (
 )
 from pixiv_novel_toolkit.postprocess.book_info_generator import BookInfoGenerator
 from pixiv_novel_toolkit.postprocess.assembly import DirectoryAssembler
+from pixiv_novel_toolkit.postprocess.auditing import TextAuditor, audit_lines
+from pixiv_novel_toolkit.postprocess.cleaning import (
+    TextCleaner,
+    clean_text,
+    is_suspected_hard_wrap,
+)
 from pixiv_novel_toolkit.postprocess.diffing import DirectoryDiffer, TxtFileComparator
 from pixiv_novel_toolkit.postprocess.formatting import (
     BatchTxtFileFormatter,
@@ -106,9 +112,16 @@ from pixiv_novel_toolkit.postprocess.formatting import (
     interleave_blank_lines,
 )
 from pixiv_novel_toolkit.postprocess.merging import TxtFileMerger
+from pixiv_novel_toolkit.postprocess.processing_config import (
+    TEXT_PROCESSING_DEFAULTS,
+    TEXT_PROCESSING_SAMPLE,
+    load_text_processing_config,
+)
 from pixiv_novel_toolkit.postprocess.revisions import RevisionsStore
 from pixiv_novel_toolkit.postprocess_cli import (
+    _cmd_audit,
     _cmd_assemble,
+    _cmd_clean,
     _cmd_compare,
     _cmd_diff,
     _cmd_epub,

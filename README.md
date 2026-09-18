@@ -1,6 +1,6 @@
 # pixiv-novel-epub — Pixiv 小说下载与 EPUB 整理工具包
 
-从 Pixiv 下载系列/单章小说正文及插图，并自动维护章节索引、元数据与简介汇总；下载完成后可配合 `txt_file_processing.py` 进行拆卷、合并、标准化、校正、比对与 EPUB 打包，通过「原始 → 标准化 → 校正」三层流水线完成成书整理。
+从 Pixiv 下载系列/单章小说正文及插图，并自动维护章节索引、元数据与简介汇总；下载完成后可配合 `txt_file_processing.py` 进行清洗、质量检查、拆卷、标准化、校正、合并与 EPUB 打包，通过「原始 → 清洗 → 人工复核 → 标准化 → 最终校正」流水线完成成书整理。
 
 > 约定：命令中的 `<内容>` 为必填项，`[内容]` 为选填项。
 
@@ -8,6 +8,7 @@
 
 当前版本：**v0.10.0（2026-09-16）**
 
+- 新增 `clean` / `audit`：规则由 `text_processing.json` 控制，正文清洗到独立的 `cleaned/`，检查与清洗报告写入 `reports/`，不修改原始下载；正常清洗后自动准备 `reviewed/` 人工复核目录。
 - 新增 `quick` 一键成书：输入 Pixiv 系列 ID 或网址，自动完成下载、标准化、TXT 合并和 EPUB 打包，并以书籍信息中的书名命名成书文件。
 - `quick` 支持卷配置、制作人、TXT 缩进、标点转换、章/卷标题样式、封面、插图和图片质量等可选参数。
 - `series` / `novel` 支持完整 Pixiv 网址及省略 `https://` 的网址，不再只能输入纯数字 ID。
@@ -114,7 +115,9 @@ python cli.py quick "pixiv.net/novel/series/<系列ID>" \
 
 ```bash
 pixiv-novel series <系列ID或网址>
-pixiv-novel split 原始.txt standardized/
+pixiv-novel clean chapters/
+pixiv-novel audit cleaned/
+pixiv-novel format cleaned/
 pixiv-novel epub standardized/ 全书.epub
 
 # 最快上手：下载整个系列并直接生成 TXT + EPUB
@@ -169,23 +172,52 @@ cd /目录/pixiv-novel-epub
 python cli.py series <系列ID或网址>
 ```
 
-下载完成后，章节正文与插图存放在 `series/series_<ID>/` 中：
+下载完成后，章节正文与插图存放在 `series/series_<ID>/` 中
 
-![下载完成后的目录结构](/docs/images/Snipaste_2026-08-13_20-06-50.png)
+### 3. 清洗并检查章节（效果可能不好）
 
-### 3. 格式化章节
-
-将下载的章节批量标准化（重命名 + 注入标题 + 段落空行；`--punct` 同时转换中文标点）。输出目录缺省时自动写入 `series/series_<ID>/standardized/`；成功后会在标准化目录同级自动创建空的 `corrected/`，已存在时保留其中全部人工校正内容：
+清洗不会修改 `chapters/`，默认把 UTF-8 结果写入同级 `cleaned/`，并自动创建同级空目录 `reviewed/`（已有内容绝不清空或覆盖）；随后可对清洗结果做只读质量检查，报告写入 `reports/`：
 
 ```bash
-python txt_file_processing.py format "series/series_<ID>" [输出目录] [--punct]
+python txt_file_processing.py clean "series/series_<ID>/chapters"
+python txt_file_processing.py audit "series/series_<ID>/cleaned"
 ```
 
-### 4. （可选）人工修订
+规则开关与阈值统一存放在项目根目录 `text_processing.json`。对规则没有把握时，可先运行 `clean ... --dry-run`，只生成清洗报告，不写正文也不创建 `reviewed/`。
+
+> **清洗结果必须人工复核。** `clean` 依赖关键词、空行数量和段落形态等规则，并不理解小说语义，因此可能漏掉作者附言，也可能把特殊排版、场景切换或正文误判为待删除内容。建议先看 `reports/` 中的报告，再把需要修改的章节复制到 `reviewed/` 后编辑；不要把 `cleaned/` 直接当作最终稿。
+
+### 4. 人工复核清洗结果
+
+将需要人工调整的章节从 `cleaned/` 复制到 `reviewed/`，只在 `reviewed/` 中修改。未修改的章节不必复制；后续 `format cleaned/` 会自动按数字前缀配对，优先采用 `reviewed/` 中的同编号文件。
+
+如果没有运行 `clean`，但仍想在格式化前人工修订，建议在 `chapters/` 同级手动创建 `reviewed/`，只放改过的章节。因为它位于输入目录同级且名称为 `reviewed`，`format` 会自动识别，不需要传 `--reviewed-dir`：
+
+```bash
+mkdir "series/series_<ID>/reviewed"
+# 从 chapters/ 复制需要修改的章节到 reviewed/，完成修改后再执行：
+python txt_file_processing.py format "series/series_<ID>/chapters" "series/series_<ID>/standardized" --punct
+```
+
+如果人工复核目录使用其他名称或放在其他位置，才需要通过 `--reviewed-dir` 指定：
+
+```bash
+python txt_file_processing.py format "series/series_<ID>/chapters" "series/series_<ID>/standardized" --reviewed-dir "D:/Novels/manual_review" --punct
+```
+
+### 5. 格式化章节
+
+将复核后的章节批量标准化（重命名 + 注入标题 + 段落空行；`--punct` 同时转换中文标点）。输入 `cleaned/` 时会自动叠加同级 `reviewed/`，其中同编号人工版本优先；输出目录缺省时自动写入 `series/series_<ID>/standardized/`。成功后会在标准化目录同级自动创建空的 `corrected/`，已存在时保留其中全部人工校正内容：
+
+```bash
+python txt_file_processing.py format "series/series_<ID>/cleaned" [输出目录] [--punct]
+```
+
+### 6. （可选）最终人工校正
 
 对不满意的章节进行人工修订，把**改过的文件**放进 `corrected/` 目录（未改的章节后续会自动取 standardized 版）；本步骤可跳过。
 
-### 5. 生成成书
+### 7. 生成成书
 
 **未修订**时直接基于 `standardized/` 输出；**已修订**时在命令中追加 `corrected/` 目录（校正版优先）。
 
@@ -279,6 +311,7 @@ series/series_<ID>/
 下载并完成人工校对后，使用子命令进行后处理（不会在下载时自动调用，保留校对时间窗口）。`txt_file_processing.py` 提供以下功能：
 
 - **合并出书**：`merge`（多目录合成单文件 txt）
+- **清洗与质量检查**：`clean`（安全规则清洗到新目录）、`audit`（只读生成质量报告）
 - **格式化**：`format`（批量标准化）、`format-single`（单文件加空行）
 - **拆卷**：`split`（卷打包文件/整本 txt 拆成独立章节）
 - **目录导出/回写**：`toc`（章节目录导出成文件供人工清理标题，编辑后回写）
@@ -286,6 +319,30 @@ series/series_<ID>/
 - **比对与工具**：`compare` / `punct` / `diff` / `note` / `assemble`
 
 路径参数可写相对路径（相对脚本所在目录）或绝对路径。
+
+### clean / audit — 清洗与质量检查
+
+`clean` 默认把结果写入输入同级 `cleaned/`，并在 `reports/` 生成 `clean_report.txt/json`；不会原地覆盖输入。正常运行成功后还会创建同级 `reviewed/`，目录已存在时保留全部人工内容；`--dry-run` 不创建它。`audit` 只读检查正文，默认生成 `audit_report.txt/json`：
+
+```bash
+python txt_file_processing.py clean chapters/
+python txt_file_processing.py clean chapters/ --dry-run
+python txt_file_processing.py audit cleaned/
+python txt_file_processing.py audit cleaned/ --format txt
+```
+
+项目根目录的 `text_processing.json` 控制每条规则的 `enabled`、阈值、默认输出目录和广告关键词。`clean` 默认处理高置信度问题，包括明确以 `PS` / `P.S.` / `作者的话` 开头的作者附言，以及紧随其后、命中“推荐好友/新书/求票/收藏”等信号的有限续段。依赖连续空行的两项修改默认关闭：`remove_blank_separated_author_notes` 可识别每章末尾由至少 2 个连续空行隔开的顶格作者说明，保留以两个全角空格开头的中文正文；启用时同时删除该尾块中的 `【插图: 文件名】` 或 Pixiv 原始 `[uploadedimage:数字]` 文本标记，但不删除实际图片，后续 EPUB 可按插图信息和文件名章节号还原。`replace_scene_break_blank_lines` 可把正文中的连续空行替换为独立的 `……` 场景分隔段，若相邻已有独立省略号则不重复插入。每次 clean 无论开关状态都会分别生成 `blank_author_notes_report.txt/json` 与 `scene_breaks_report.txt/json`；前者列出随附插图标记，后者列出候选位置前后各 2 段。普通正文硬回车合并可能改变段落，因此默认关闭。引号计数、疑似缺句末标点和长段落等存在语义歧义，只由 `audit` 定位，不会仅因被报告就自动修改。目录审计只读取数字前缀章节文件，无数字前缀的整本 TXT 会被忽略并列在报告中；需要时可把该文件作为单文件单独审计。
+
+`clean` 的输出只是规则清洗稿，不是最终稿。规则对不同作者、网站和排版习惯不可能全部适配，可能出现漏删作者话、误判特殊空行或保留广告续段等情况。推荐闭环为 `audit chapters/` → 调整配置 → `clean chapters/` → `audit cleaned/` → 人工复核并把改过的章节放进 `reviewed/` → `format cleaned/`。`cleaned/` 保留机器结果作为基线，`reviewed/` 只放人工改过的文件。
+
+外来整本 TXT 必须在 `split` 之前执行这类依赖连续空行的检查和清洗。`split` 会去掉原始空白行并在每个非空段落后统一插入一个空行，因此作者附言的“连续 3 个空行”信号会在拆分时消失：
+
+```bash
+python txt_file_processing.py audit "外来小说.txt"
+python txt_file_processing.py clean "外来小说.txt" "cleaned_source"
+python txt_file_processing.py split "cleaned_source/外来小说.txt" "chapters"
+python txt_file_processing.py audit "chapters"
+```
 
 ### merge — 合并章节为单文件
 
@@ -317,15 +374,23 @@ python txt_file_processing.py merge standardized/ corrected/ 全书.txt --maker 
 
 ### format — 批量标准化
 
-批量重命名 + 顶部注入章节标题（正文转中文数字，跳过番外）+ 段落空行；同时自动在输出目录生成 `000 书籍信息.txt`（能找到 `series_<ID>_info.txt` 则套模板填充书名/作者/连载状态/字数/简介，否则空白占位），并在输出目录同级创建 `corrected/`（若已存在则只复用，绝不清空或覆盖）：
+批量重命名 + 顶部注入章节标题（正文转中文数字，跳过番外）+ 段落空行；同时自动在输出目录生成 `000 书籍信息.txt`（能找到 `series_<ID>_info.txt` 则套模板填充书名/作者/连载状态/字数/简介，否则空白占位），并在输出目录同级创建 `corrected/`（若已存在则只复用，绝不清空或覆盖）。当输入目录同级存在 `reviewed/` 时，format 会自动将它作为人工覆盖层，按文件名开头的数字编号优先使用其中的版本；也可用 `--reviewed-dir` 指定其他人工复核目录。`reviewed/` 只需放改过的章节：
 
 ```bash
 # 输出目录可省略，缺省输出到输入目录同级的 standardized/
-python txt_file_processing.py format <输入目录> [输出目录] [--punct]
-# 例：format "series/series_<ID>/chapters" --punct  → 输出到 series/series_<ID>/standardized
+python txt_file_processing.py format <输入目录> [输出目录] [--reviewed-dir <人工复核目录>] [--punct]
+# 自动读取同级 reviewed/；例子输出到 series/series_<ID>/standardized
+python txt_file_processing.py format "series/series_<ID>/cleaned" --punct
+
+# 未运行 clean 时，也可手动创建 chapters/ 同级 reviewed/，format 会自动读取
+python txt_file_processing.py format "series/series_<ID>/chapters" "series/series_<ID>/standardized" --punct
+
+# 只有使用其他目录名或其他位置时才显式指定
+python txt_file_processing.py format "series/series_<ID>/chapters" "series/series_<ID>/standardized" --reviewed-dir "D:/Novels/manual_review" --punct
 ```
 
-`--punct`：同时把正文英文标点转中文（`!`→`！`、`?`→`？`、`"`→按全文奇偶配对 `“ ”`）；不加则标点保持原样。
+- `--reviewed-dir`：指定非默认的格式化前人工复核目录，其中同编号文件覆盖输入目录版本；显式路径不存在时命令报错。省略时自动查找输入目录同级的 `reviewed/`。
+- `--punct`：同时把正文英文标点转中文（`!`→`！`、`?`→`？`、`"`→按全文奇偶配对 `“ ”`）；不加则标点保持原样。
 
 ### format-single — 单文件加空行
 
@@ -487,44 +552,57 @@ python txt_file_processing.py assemble <标准化目录> <校正目录> <输出�
 
 - **按数字编号配对**合成：校正目录有的取校正版（输出文件名优先用校正版命名，你改过标题的章节用新标题）、未改的取标准化命名、校正目录新增的也进入最终目录；无数字前缀的文件按完整名匹配
 
-## 三层流水线工作流（推荐）
+## 清洗—标准化流水线工作流（推荐）
 
-下载后保持原始下载文件不动，通过三层渐进式处理得到最终成书目录，每一步都生成日志可追溯：
+下载后保持原始下载文件不动，通过渐进式处理得到最终成书目录，每一步都生成日志或报告可追溯：
 
 ```
 series/series_<ID>/
 ├── chapters/          # ① 下载原始（不动，保持原始性）
-├── standardized/      # ② 标准化（format --punct 输出）
-├── corrected/         # ③ 校正（人工修改的子集 + _revisions.json）
-└── final/             # ④ 合成（assemble 输出 + _source_map.txt）
+├── cleaned/           # ② 清洗（clean 输出）
+├── reports/           # clean / audit 报告
+├── reviewed/          # ③ 格式化前人工复核（只放相对 cleaned 改过的章节）
+├── standardized/      # ④ 标准化（cleaned + reviewed 覆盖后 format 输出）
+├── corrected/         # ⑤ 最终校正（人工修改的子集 + _revisions.json）
+└── final/             # ⑥ 合成（assemble 输出 + _source_map.txt）
 ```
 
 ### 完整流程示例
 
 ```bash
-# 1) 标准化：批量化重命名 + 注入标题 + 加空行 + 标点转换
-python txt_file_processing.py format "series/series_<ID>/chapters" "series/series_<ID>/standardized" --punct
+# 1) 清洗原文到新目录（规则由 text_processing.json 控制）
+python txt_file_processing.py clean "series/series_<ID>/chapters"
 
-# 2) 人工校正：把 standardized/ 需要改的 txt 拷到 corrected/ 再改
+# 2) 只读检查清洗结果，生成 reports/audit_report.txt/json
+python txt_file_processing.py audit "series/series_<ID>/cleaned"
+
+# 3) 人工复核：把 cleaned/ 中需要改的章节复制到 reviewed/ 后修改
+#    reviewed/ 由正常 clean 自动创建；只放改过的文件，重跑 clean 不会覆盖它
+
+# 4) 标准化：自动叠加 reviewed/，同编号人工版本优先
+#    然后批量重命名 + 注入标题 + 加空行 + 标点转换
+python txt_file_processing.py format "series/series_<ID>/cleaned" "series/series_<ID>/standardized" --punct
+
+# 5) 最终人工校正：把 standardized/ 需要改的 txt 拷到 corrected/ 再改
 #    在 corrected/ 里只保留你改过的文件（未改的由 merge/epub 自动取 standardized 版）
 #    顺手给改过的文件记一条修订说明：
 python txt_file_processing.py note add "series/series_<ID>/corrected" "043 第一章 xxx.txt" --msg "删除作者 PS 与两处错字"
 
-# 3) 对比查看：差异报告 + 完整日志
+# 6) 对比查看：差异报告 + 完整日志
 python txt_file_processing.py diff "series/series_<ID>/standardized" "series/series_<ID>/corrected" "diff_report.txt"
 
-# 4) 查看修订记录
+# 7) 查看修订记录
 python txt_file_processing.py note list "series/series_<ID>/corrected"
 
-# 5) 出成书 txt（推荐，一步到位）：
+# 8) 出成书 txt（推荐，一步到位）：
 #    corrected/ 改过的取校正版，未改的取 standardized，合并成一个 txt；
 #    --info 默认开启，合并输出开头的 000 书籍信息.txt 自动按实际合并字数刷新『字数』行。
 python txt_file_processing.py merge "series/series_<ID>/standardized" "series/series_<ID>/corrected" "series/series_<ID>/全书.txt"
 
-# 5') 可选：只要分章成书目录、不要单文件，再走 assemble（默认不开启）
+# 8') 可选：只要分章成书目录、不要单文件，再走 assemble（默认不开启）
 python txt_file_processing.py assemble "series/series_<ID>/standardized" "series/series_<ID>/corrected" "series/series_<ID>/final"
 
-# 6) 出 EPUB 电子书（纯标准库实现，零依赖）：校正版优先，未改的取 standardized
+# 9) 出 EPUB 电子书（纯标准库实现，零依赖）：校正版优先，未改的取 standardized
 python txt_file_processing.py epub "series/series_<ID>/standardized" "series/series_<ID>/corrected" "series/series_<ID>/全书.epub"
 #    只用单目录也行：epub "series/series_<ID>/final" 全书.epub
 #    覆盖书名/作者：--title "..." --author "..."

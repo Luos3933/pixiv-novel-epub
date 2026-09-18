@@ -1,0 +1,215 @@
+{
+    "_说明": {
+        "总览": "clean 写入 cleaned/，audit 与 clean 报告写入 reports/；每条规则用 enabled 控制。",
+        "安全性": "clean 只自动修改高置信度问题；引号不配对、缺句末标点等歧义问题仅由 audit 提示。普通硬回车合并可能改变段落，默认关闭。",
+        "路径": "paths 中的相对目录名以输入目录或输入文件的父目录为基准。"
+    },
+    "version": 1,
+    "paths": {
+        "_说明": "输出目录名。相对路径以输入目录的父目录（或输入文件所在目录）为基准。",
+        "clean_output": "cleaned",
+        "report_output": "reports"
+    },
+    "clean": {
+        "join_broken_quote_lines": {
+            "_说明": "合并冒号或左引号后明显错误的换行，例如“他说：\\n“你好””。属于高置信度修复。",
+            "enabled": true
+        },
+        "join_suspected_hard_wraps": {
+            "_说明": "合并疑似由固定排版宽度造成的句内换行。可能误合并正常段落，建议先查看 audit 的 suspected_hard_wraps，默认关闭。minimum_previous_length 是前一行最短字符数，maximum_line_length 是参与判断的最长字符数，设为 0 表示不限制上限。",
+            "enabled": false,
+            "minimum_previous_length": 30,
+            "maximum_line_length": 80
+        },
+        "normalize_chapter_titles": {
+            "_说明": "修复高置信度章节标题格式。repair_missing_prefix 补“第”，repair_missing_suffix 补“章”，remove_number_dots 把“第1.2章”整理为“第12章”；不会强改疑似正文的数字开头句。",
+            "enabled": true,
+            "repair_missing_prefix": true,
+            "repair_missing_suffix": true,
+            "remove_number_dots": true
+        },
+        "remove_adjacent_duplicate_lines": {
+            "_说明": "删除完全相同且相邻的正文行，不删除章节标题。minimum_length 是参与去重的最短字符数。",
+            "enabled": true,
+            "minimum_length": 4
+        },
+        "remove_advertisement_lines": {
+            "_说明": "删除作者附言块。首段必须同时以 required_prefixes 之一开头并命中 keywords；之后最多检查 maximum_following_paragraphs 个非空段落，仅继续删除命中 continuation_keywords 的荐书/求票/收藏续段，遇正常正文立即停止。",
+            "enabled": true,
+            "required_prefixes": [
+                "PS",
+                "P.S.",
+                "作者的话"
+            ],
+            "keywords": [
+                "求票",
+                "求收藏",
+                "求月票",
+                "求鲜花",
+                "收藏"
+            ],
+            "continuation_keywords": [
+                "推荐好友",
+                "推荐新书",
+                "好友新书",
+                "新书【",
+                "求票",
+                "求收藏",
+                "求月票",
+                "求鲜花",
+                "收藏本书",
+                "支持本书"
+            ],
+            "maximum_following_paragraphs": 3
+        },
+        "remove_blank_separated_author_notes": {
+            "_说明": "删除章末连续空行后的顶格作者附言行。必须至少有 minimum_blank_lines 个连续空行，候选尾部非空行数不超过 maximum_note_lines，并在开头 signal_scan_lines 个顶格非插图段落内命中 signals 强信号；以两个全角空格开头的中文正文会保留。remove_illustration_markers 为 true 时，作者附言尾块中的【插图: 文件名】及 Pixiv 原始 [uploadedimage:数字] 文本标记一并删除，但不会删除实际图片文件，后续 EPUB 可按插图信息和文件名章节号还原。默认关闭，但 clean 仍会生成 blank_author_notes_report.txt/json 候选报告。",
+            "enabled": false,
+            "minimum_blank_lines": 2,
+            "maximum_note_lines": 20,
+            "signal_scan_lines": 2,
+            "remove_illustration_markers": true,
+            "signals": [
+                "作者的话",
+                "作者有话说",
+                "赞助地址",
+                "货摊地址",
+                "交流群",
+                "交流QQ群",
+                "推荐好友",
+                "推荐新书",
+                "题外话",
+                "群友",
+                "无偿插画",
+                "插画来自",
+                "插图来自",
+                "插画：",
+                "感谢",
+                "要说的话",
+                "停更",
+                "本书仅发布",
+                "读者群",
+                "be like",
+                "求票",
+                "求收藏",
+                "求月票",
+                "求鲜花",
+                "https://",
+                "http://"
+            ]
+        },
+        "replace_scene_break_blank_lines": {
+            "_说明": "把正文中不少于 minimum_blank_lines 个连续空行替换为 marker 场景分隔段，默认关闭。若空行前后已有独立的省略号段落，则不重复插入，只把多余空行规范为一个。作者附言候选会自动排除。context_paragraphs 控制 scene_breaks_report.txt/json 中前后各展示几段。",
+            "enabled": true,
+            "minimum_blank_lines": 2,
+            "marker": "……",
+            "context_paragraphs": 2
+        },
+        "normalize_punctuation": {
+            "_说明": "把英文双引号、问号和感叹号转换为中文标点。原文引号结构复杂时可能改变方向，因此默认关闭；format --punct 也会执行同类转换。",
+            "enabled": false
+        }
+    },
+    "audit": {
+        "decoding_anomalies": {
+            "_说明": "检查解码替换符“�”。命中通常表示源文件存在无法恢复的损坏字节，需要重新获取原文或人工校正。",
+            "enabled": true
+        },
+        "quote_balance": {
+            "_说明": "统计英文、中文和直角引号是否配对。跨段对话可能合法地出现多个左引号，所以这里只报告，不由 clean 自动修改。",
+            "enabled": true
+        },
+        "long_paragraph": {
+            "_说明": "报告字符数达到 minimum_length 的单行长段落，便于检查是否漏换行；不会自动拆段。",
+            "enabled": true,
+            "minimum_length": 339
+        },
+        "duplicate_lines": {
+            "_说明": "报告完全相同的相邻行。minimum_length 是参与检查的最短字符数；对应的 clean 规则是 remove_adjacent_duplicate_lines。",
+            "enabled": true,
+            "minimum_length": 4
+        },
+        "duplicate_chapter_titles": {
+            "_说明": "检查相距不超过 nearby_line_limit 行的重复章节标记或相同编号，常用于发现重复标题。",
+            "enabled": true,
+            "nearby_line_limit": 5
+        },
+        "chapter_title_anomalies": {
+            "_说明": "检查可能缺少“第/章”或编号粘连的章节标题。目录模式下对数字前缀分章文件只检查首个非空行，避免把正文数字句误报为标题。",
+            "enabled": true
+        },
+        "chapter_context": {
+            "_说明": "把每个章节标记前后的正文一并输出，方便人工核对。before/after 是前后行数，maximum_entries 是每个文件最多输出的条目数；报告会较长，默认关闭。",
+            "enabled": false,
+            "before": 2,
+            "after": 2,
+            "maximum_entries": 100
+        },
+        "advertisement_keywords": {
+            "_说明": "报告命中 keywords 的疑似作者附言或广告，并附带前后文。before/after 是上下文行数；对应的 clean 规则 remove_advertisement_lines 采用更严格的行首和续段条件。",
+            "enabled": true,
+            "before": 2,
+            "after": 2,
+            "keywords": [
+                "求票",
+                "求收藏",
+                "求月票",
+                "求鲜花",
+                "作者的话",
+                "推荐好友新书",
+                "推荐新书"
+            ]
+        },
+        "blank_separated_author_notes": {
+            "_说明": "检查每章最后一组连续空行后的短尾块是否命中作者附言强信号。参数与 clean.remove_blank_separated_author_notes 相同；建议对外来整本 TXT 在 split 之前运行。",
+            "enabled": true,
+            "minimum_blank_lines": 3,
+            "maximum_note_lines": 20,
+            "signal_scan_lines": 2,
+            "remove_illustration_markers": true,
+            "signals": [
+                "作者的话",
+                "作者有话说",
+                "赞助地址",
+                "货摊地址",
+                "感谢您的支持",
+                "交流群",
+                "交流QQ群",
+                "推荐好友",
+                "推荐新书",
+                "题外话",
+                "来自群友",
+                "无偿插画",
+                "插画来自",
+                "插图来自",
+                "插画：",
+                "遥香说",
+                "遥香：",
+                "遥香忙",
+                "本章没有插图",
+                "感谢遥香",
+                "一些要说的话",
+                "停更",
+                "本书仅发布",
+                "读者群",
+                "be like",
+                "求票",
+                "求收藏",
+                "求月票",
+                "求鲜花",
+                "https://",
+                "http://"
+            ]
+        },
+        "suspected_hard_wraps": {
+            "_说明": "报告疑似句内硬换行。minimum_previous_length 和 maximum_line_length 与 clean 的同名阈值含义一致；确认后可启用 clean.join_suspected_hard_wraps。",
+            "enabled": true,
+            "minimum_previous_length": 30,
+            "maximum_line_length": 80
+        },
+        "punctuation_anomalies": {
+            "_说明": "报告右引号前疑似缺句末标点、冒号后下一段未以引号开始等情况。拟声词和特殊对话可能属于正常写法，因此只报告不自动修复。",
+            "enabled": true
+        }
+    }
+}

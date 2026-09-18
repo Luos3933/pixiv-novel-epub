@@ -10,6 +10,8 @@ from pixiv_novel_toolkit.chapters.splitter import VolumeSplitter
 from pixiv_novel_toolkit.chapters.toc import TocManager
 from pixiv_novel_toolkit.epub.builder import EpubBuilder
 from pixiv_novel_toolkit.postprocess.assembly import DirectoryAssembler
+from pixiv_novel_toolkit.postprocess.auditing import TextAuditor
+from pixiv_novel_toolkit.postprocess.cleaning import TextCleaner
 from pixiv_novel_toolkit.postprocess.diffing import DirectoryDiffer, TxtFileComparator
 from pixiv_novel_toolkit.postprocess.formatting import (
     BatchTxtFileFormatter,
@@ -17,6 +19,9 @@ from pixiv_novel_toolkit.postprocess.formatting import (
     convert_punctuation,
 )
 from pixiv_novel_toolkit.postprocess.merging import TxtFileMerger
+from pixiv_novel_toolkit.postprocess.processing_config import (
+    load_text_processing_config,
+)
 from pixiv_novel_toolkit.postprocess.revisions import RevisionsStore
 
 
@@ -37,6 +42,109 @@ def _resolve_path(path):
     if os.path.isabs(path):
         return path
     return str(PROJECT_ROOT / path)
+
+
+def _configured_stage_path(input_path, configured_path):
+    """把配置中的输出目录解析到输入路径的同级目录。"""
+    path = Path(configured_path)
+    if path.is_absolute():
+        return str(path)
+    return str(Path(input_path).resolve().parent / path)
+
+
+def _valid_text_input(path):
+    return os.path.isdir(path) or (
+        os.path.isfile(path) and path.lower().endswith(".txt")
+    )
+
+
+def _cmd_clean(args):
+    """清洗单个 TXT 或目录，结果写入独立的 cleaned/。"""
+    input_path = _resolve_path(args.input)
+    if not _valid_text_input(input_path):
+        logger.error(f"输入路径不存在（应为目录或 txt 文件）: {input_path}")
+        return 1
+    config_file = _resolve_path(args.config) if args.config else None
+    config = load_text_processing_config(
+        config_file,
+        info=logger.info,
+        warning=logger.warning,
+    )
+    output_dir = (
+        _resolve_path(args.output_dir)
+        if args.output_dir
+        else _configured_stage_path(input_path, config["paths"]["clean_output"])
+    )
+    report_dir = (
+        _resolve_path(args.report_dir)
+        if args.report_dir
+        else _configured_stage_path(input_path, config["paths"]["report_output"])
+    )
+    input_resolved = Path(input_path).resolve()
+    if input_resolved == Path(output_dir).resolve():
+        logger.error("clean 输出目录不能与输入路径相同；该命令不会原地覆盖正文")
+        return 1
+    report = TextCleaner(
+        input_path,
+        output_dir,
+        report_dir,
+        config,
+        dry_run=args.dry_run,
+    ).run()
+    summary = report["summary"]
+    logger.info(
+        f"清洗完成：文件 {summary['file_count']}，修改文件 {summary['changed_files']}，"
+        f"修改项 {summary['change_count']}"
+    )
+    if args.dry_run:
+        logger.info("当前为 --dry-run，仅生成报告，未写入 cleaned 正文。")
+    else:
+        logger.info(f"清洗输出: {output_dir}")
+        reviewed_dir = os.path.join(
+            os.path.dirname(os.path.abspath(output_dir)), "reviewed"
+        )
+        try:
+            already_exists = os.path.isdir(reviewed_dir)
+            os.makedirs(reviewed_dir, exist_ok=True)
+        except OSError as exc:
+            logger.error(f"清洗已完成，但无法创建人工复核目录 {reviewed_dir}: {exc}")
+            return 1
+        if already_exists:
+            logger.info(f"人工复核目录已存在，保留原有内容: {reviewed_dir}")
+        else:
+            logger.info(f"已自动创建人工复核目录: {reviewed_dir}")
+    logger.info(f"清洗报告: {report_dir}")
+    return 0
+
+
+def _cmd_audit(args):
+    """只读检查单个 TXT 或目录，报告写入独立的 reports/。"""
+    input_path = _resolve_path(args.input)
+    if not _valid_text_input(input_path):
+        logger.error(f"输入路径不存在（应为目录或 txt 文件）: {input_path}")
+        return 1
+    config_file = _resolve_path(args.config) if args.config else None
+    config = load_text_processing_config(
+        config_file,
+        info=logger.info,
+        warning=logger.warning,
+    )
+    report_dir = (
+        _resolve_path(args.report_dir)
+        if args.report_dir
+        else _configured_stage_path(input_path, config["paths"]["report_output"])
+    )
+    report = TextAuditor(
+        input_path,
+        report_dir,
+        config,
+        report_format=args.format,
+    ).run()
+    logger.info(
+        f"检查完成：文件 {report['file_count']}，发现 {report['finding_count']} 项；"
+        f"报告目录: {report_dir}"
+    )
+    return 0
 
 
 def _cmd_merge(args):
@@ -202,7 +310,25 @@ def _cmd_format_batch(args):
     if not os.path.isdir(input_folder):
         logger.error(f" 输入目录不存在: {input_folder}")
         return 1
-    BatchTxtFileFormatter(input_folder, output_folder, punct=args.punct).format_all_files()
+    explicit_reviewed = getattr(args, "reviewed_dir", None)
+    reviewed_folder = (
+        _resolve_path(explicit_reviewed)
+        if explicit_reviewed
+        else os.path.join(os.path.dirname(os.path.abspath(input_folder)), "reviewed")
+    )
+    overlay_folders = []
+    if explicit_reviewed and not os.path.isdir(reviewed_folder):
+        logger.error(f"指定的人工复核目录不存在: {reviewed_folder}")
+        return 1
+    if os.path.isdir(reviewed_folder):
+        overlay_folders.append(reviewed_folder)
+        logger.info(f"检测到人工复核目录，将优先使用其中的同编号章节: {reviewed_folder}")
+    BatchTxtFileFormatter(
+        input_folder,
+        output_folder,
+        punct=args.punct,
+        overlay_folders=overlay_folders,
+    ).format_all_files()
     corrected_folder = os.path.join(
         os.path.dirname(os.path.abspath(output_folder)), "corrected"
     )
@@ -419,10 +545,63 @@ def build_arg_parser():
                               "'字数' 行后写入/更新 'TXT制作：<名字>' 行")
     p_merge.set_defaults(func=_cmd_merge, info=True)
 
-    p_fmt_batch = sub.add_parser("format", help="批量重命名 + 顶部注入章节标题 + 段落空行")
-    p_fmt_batch.add_argument("input_folder", help="原始章节 txt 所在目录")
+    p_clean = sub.add_parser(
+        "clean",
+        help="清洗到独立的 cleaned/，并准备 reviewed/ 人工复核覆盖目录",
+    )
+    p_clean.add_argument("input", help="原始章节目录或整本 txt 文件")
+    p_clean.add_argument(
+        "output_dir", nargs="?", default=None,
+        help="清洗输出目录（缺省时使用输入同级 cleaned/ 或配置中的 paths.clean_output）",
+    )
+    p_clean.add_argument(
+        "--config", default=None,
+        help="文本处理配置文件（默认项目根目录 text_processing.json；缺失时自动生成）",
+    )
+    p_clean.add_argument(
+        "--report-dir", default=None,
+        help="清洗报告目录（缺省时使用输入同级 reports/ 或配置中的 paths.report_output）",
+    )
+    p_clean.add_argument(
+        "--dry-run", action="store_true",
+        help="只分析并生成 clean_report，不写入 cleaned 正文，也不创建 reviewed/",
+    )
+    p_clean.set_defaults(func=_cmd_clean)
+
+    p_audit = sub.add_parser(
+        "audit",
+        help="按 text_processing.json 只读检查正文，并把质量报告写入独立的 reports/",
+    )
+    p_audit.add_argument("input", help="待检查的章节目录或整本 txt 文件")
+    p_audit.add_argument(
+        "report_dir", nargs="?", default=None,
+        help="报告目录（缺省时使用输入同级 reports/ 或配置中的 paths.report_output）",
+    )
+    p_audit.add_argument(
+        "--config", default=None,
+        help="文本处理配置文件（默认项目根目录 text_processing.json；缺失时自动生成）",
+    )
+    p_audit.add_argument(
+        "--format", choices=["txt", "json", "both"], default="both",
+        help="报告格式（默认: both，同时生成 audit_report.txt/json）",
+    )
+    p_audit.set_defaults(func=_cmd_audit)
+
+    p_fmt_batch = sub.add_parser(
+        "format",
+        help="对 clean 输出继续标准化：批量重命名 + 顶部注入章节标题 + 段落空行",
+    )
+    p_fmt_batch.add_argument(
+        "input_folder",
+        help="待标准化章节目录；若同级有 reviewed/，其中同编号文件自动优先",
+    )
     p_fmt_batch.add_argument("output_folder", nargs="?", default=None,
                              help="格式化后输出目录（缺省时输出到输入目录同级的 standardized/）")
+    p_fmt_batch.add_argument(
+        "--reviewed-dir", default=None, metavar="目录",
+        help="格式化前人工复核目录；指定后优先使用其中的同编号章节。"
+             "省略时自动查找输入目录同级 reviewed/",
+    )
     p_fmt_batch.add_argument("--punct", action="store_true",
                              help="同时把英文标点 (! ? \") 转为中文标点（！？“ ”），引号按奇偶配对")
     p_fmt_batch.set_defaults(func=_cmd_format_batch)

@@ -25,7 +25,21 @@ class TextIoTests(unittest.TestCase):
             self.assertEqual(content, "这是一个测试文本。")
             self.assertEqual(len(messages), 1)
 
+    def test_damaged_utf8_uses_replacement_without_falling_back_to_gb18030(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "damaged.txt"
+            data = "第一章 熟女二婶\n正文仍应正常读取".encode("utf-8")
+            path.write_bytes(data[:9] + b"\xff" + data[10:])
+            messages = []
+
+            self.assertEqual(detect_encoding(path), "utf-8")
+            content = read_text(path, info=messages.append)
+
+            self.assertIn("第一章", content)
+            self.assertIn("正文仍应正常读取", content)
+            self.assertIn("\ufffd", content)
+            self.assertEqual(len(messages), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
-
